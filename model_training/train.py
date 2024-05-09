@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.optim as optim
+import numpy as np
+from sklearn.metrics import accuracy_score
 from data_preprocess.preprocess import apply_word_embeddings, preprocess_data
 
 
@@ -87,27 +89,21 @@ def train():
                 val_loss += loss.item()
         print(f"Epoch {epoch + 1}, Validation Loss: {val_loss / len(val_loader)}")
 
-    # Test Phase
+    # Testing Phase
     model.eval()
-    test_loss = 0
-    test_accuracy = 0
-    total_correct = 0
-    total_samples = 0
-
+    y_pred = []
+    y_true = []
     with torch.no_grad():
-        for inputs, targets in test_loader:
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            test_loss += loss.item()
-            
-            # Calculate accuracy
-            predicted_labels = outputs.argmax(dim=1)
-            total_correct += (predicted_labels == targets).sum().item()
-            total_samples += targets.size(0)
+        for texts, labels in test_loader:
+            predictions = model(texts)
+            predictions = torch.sigmoid(predictions).round()  # Convert to binary predictions
+            y_pred.extend(predictions.numpy())
+            y_true.extend(labels.numpy())
 
-    # Average loss and accuracy
-    average_test_loss = test_loss / len(test_loader)
-    test_accuracy = total_correct / total_samples
-
-    print(f"Test Loss: {average_test_loss}")
-    print(f"Test Accuracy: {test_accuracy}")
+    # Calculate accuracy for each trait
+    y_pred = np.array(y_pred)
+    y_true = np.array(y_true)
+    trait_names = ['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']
+    for i, trait in enumerate(trait_names):
+        trait_accuracy = accuracy_score(y_true[:, i], y_pred[:, i])
+        print(f'Accuracy for {trait}: {trait_accuracy:.4f}')
