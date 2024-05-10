@@ -1,10 +1,13 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
+from transformers import BertModel, BertTokenizer, AdamW
 import torch.optim as optim
 import numpy as np
+import pandas as pd
 from sklearn.metrics import accuracy_score
-from data_preprocess.preprocess import apply_word_embeddings, preprocess_data
+from torch.utils.data import Dataset, random_split
+from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
 
 
 class HierarchicalTextModel(nn.Module):
@@ -41,6 +44,98 @@ class HierarchicalTextModel(nn.Module):
         
         output = self.fc(document_hidden)
         return output
+
+class BERTClassifier(nn.Module):
+    def __init__(self, bert_model, output_dim):
+        super(BERTClassifier, self).__init__()
+        self.bert = bert_model
+        # BERT's pooled output is of the hidden size of the model
+        self.fc = nn.Linear(self.bert.config.hidden_size, output_dim)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        # Use the pooled output for classification
+        pooled_output = outputs.pooler_output
+        return self.fc(pooled_output)
+
+def train_bert():
+    data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')
+    raw_texts = data['TEXT'].tolist()
+    # Preprocess the texts
+    max_length = 512  # Adjust as needed
+    input_ids, attention_masks = prepare_data_for_bert(raw_texts, max_length)
+    labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
+    dataset = TensorDataset(input_ids, attention_masks, labels)
+    # Determine the size of each split
+    total_size = len(dataset)
+    train_size = int(0.7 * total_size)
+    val_size = int(0.15 * total_size)
+    test_size = total_size - train_size - val_size
+
+    # Randomly split the dataset into training, validation, and test sets
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+
+    # Define batch size
+    batch_size = 8
+
+    # Create DataLoaders for each subset
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    validation_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    bert_model = BertModel.from_pretrained('bert-base-uncased')
+    model = BERTClassifier(bert_model, output_dim=2)
+
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = AdamW(model.parameters(), lr=2e-5)
+    # Training loop with validation
+    epochs = 4
+    for epoch in range(epochs):
+        model.train()
+        total_train_loss = 0
+
+        for batch in train_dataloader:
+            batch = tuple(t.to(device) for t in batch)
+            b_input_ids, b_attention_mask, b_labels = batch
+
+            model.zero_grad()
+            outputs = model(b_input_ids, b_attention_mask)
+            loss = criterion(outputs, b_labels)
+
+            loss.backward()
+            optimizer.step()
+
+            total_train_loss += loss.item()
+
+        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {total_train_loss / len(train_dataloader)}")
+
+        # Validation phase
+        model.eval()
+        total_eval_accuracy = 0
+        total_eval_loss = 0
+
+        for batch in validation_dataloader:
+            batch = tuple(t.to(device) for t in batch)
+            b_input_ids, b_attention_mask, b_labels = batch
+
+            with torch.no_grad():
+                outputs = model(b_input_ids, b_attention_mask)
+
+            logits = outputs
+            loss = criterion(logits, b_labels)
+            total_eval_loss += loss.item()
+
+            preds = torch.argmax(logits, dim=1).flatten()
+            correct = (preds == b_labels).cpu().numpy()
+            total_eval_accuracy += correct.sum()
+
+        avg_val_accuracy = total_eval_accuracy / len(val_dataset)
+        avg_val_loss = total_eval_loss / len(validation_dataloader)
+
+        print(f"Validation Loss: {avg_val_loss}, Validation Accuracy: {avg_val_accuracy}")
+
 
 def train():
     # Define the model

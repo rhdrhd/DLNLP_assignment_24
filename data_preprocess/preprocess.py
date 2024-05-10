@@ -6,6 +6,7 @@ from torch.nn.utils.rnn import pad_sequence
 from wordcloud import WordCloud
 from gensim.models import KeyedVectors
 from torch.utils.data import Dataset, random_split
+from transformers import BertTokenizer
 import matplotlib.pyplot as plt
 import re
 import numpy as np
@@ -166,7 +167,27 @@ def preprocess_data():
 
     return train_dataset,  val_dataset, test_dataset, vocab
 
+def prepare_data_for_bert(texts, max_length):
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    for text in texts:
+        encoded_dict = tokenizer.encode_plus(
+            text,                      # Text to encode
+            add_special_tokens=True,   # Add '[CLS]' and '[SEP]'
+            max_length=max_length,     # Pad & truncate all sentences
+            padding='max_length',      # Pad all to max length
+            return_attention_mask=True,# Construct attn. masks
+            truncation=True,           # Ensure below max_length
+            return_tensors='pt',       # Return pytorch tensors
+        )
 
+        input_ids.append(encoded_dict['input_ids'])
+        attention_masks.append(encoded_dict['attention_mask'])
+
+    # Convert lists to tensors
+    input_ids = torch.cat(input_ids, dim=0)
+    attention_masks = torch.cat(attention_masks, dim=0)
+
+    return input_ids, attention_masks
 
 def plot_wordcloud(text):
     # Flatten the list of lists into a single string
