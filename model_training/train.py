@@ -8,6 +8,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score
 from torch.utils.data import Dataset, random_split
 from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
+import wandb
 
 
 class HierarchicalTextModel(nn.Module):
@@ -61,24 +62,21 @@ class BERTClassifier(nn.Module):
 def train_bert():
     data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')
     raw_texts = data['TEXT'].tolist()
-    # Preprocess the texts
-    max_length = 512  # Adjust as needed
+    max_length = 512
+
     input_ids, attention_masks = prepare_data_for_bert(raw_texts, max_length)
     labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
+    labels = torch.tensor(labels, dtype=torch.long).squeeze()  # If binary classification, keep float.
     dataset = TensorDataset(input_ids, attention_masks, labels)
-    # Determine the size of each split
+
     total_size = len(dataset)
     train_size = int(0.7 * total_size)
     val_size = int(0.15 * total_size)
     test_size = total_size - train_size - val_size
 
-    # Randomly split the dataset into training, validation, and test sets
     train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-    # Define batch size
     batch_size = 8
-
-    # Create DataLoaders for each subset
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     validation_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
@@ -86,10 +84,11 @@ def train_bert():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     bert_model = BertModel.from_pretrained('bert-base-uncased')
     model = BERTClassifier(bert_model, output_dim=2)
+    model.to(device)
 
-    # Loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=2e-5)
+    optimizer = AdamW(model.parameters(), lr=1e-3)
+
     # Training loop with validation
     epochs = 4
     for epoch in range(epochs):
@@ -149,19 +148,22 @@ def train():
 
     model = HierarchicalTextModel(embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers)
 
-    # Set batch size
-    batch_size = 2
+    # Set training hyperparameters
+    batch_size = 16
+    learning_rate = 0.001
+    epochs = 3
+    wandb_on = False
 
     # Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
 
     # Assume the model and other components are set up as before
-    for epoch in range(1):
+    for epoch in range(epochs):
         # Training Phase
         model.train()
         total_loss = 0
@@ -172,7 +174,9 @@ def train():
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        print(f"Epoch {epoch + 1}, Training Loss: {total_loss / len(train_loader)}")
+        
+        train_loss_epoch_avg = total_loss / len(train_loader)
+        print(f"Epoch {epoch + 1}, Training Loss: {train_loss_epoch_avg}")
         
         # Validation Phase
         model.eval()
@@ -182,7 +186,10 @@ def train():
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
                 val_loss += loss.item()
-        print(f"Epoch {epoch + 1}, Validation Loss: {val_loss / len(val_loader)}")
+            
+            val_loss_epoch_avg = val_loss / len(val_loader)
+        print(f"Epoch {epoch + 1}, Validation Loss: {val_loss_epoch_avg}")
+        if wandb_on: wandb.log({"epoch": epoch, "train loss": train_loss_epoch_avg, "val loss": val_loss_epoch_avg})
 
     # Testing Phase
     model.eval()

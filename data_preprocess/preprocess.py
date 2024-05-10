@@ -169,6 +169,10 @@ def preprocess_data():
 
 def prepare_data_for_bert(texts, max_length):
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+    input_ids = []
+    attention_masks = []
+    
     for text in texts:
         encoded_dict = tokenizer.encode_plus(
             text,                      # Text to encode
