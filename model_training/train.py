@@ -65,8 +65,12 @@ def train_bert():
     max_length = 512
 
     input_ids, attention_masks = prepare_data_for_bert(raw_texts, max_length)
-    labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
-    labels = torch.tensor(labels, dtype=torch.long).squeeze()  # If binary classification, keep float.
+    #labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
+    #labels = torch.tensor(labels, dtype=torch.float32).squeeze()  # If binary classification, keep float.
+    labels = data['cEXT'].apply(lambda x: [1, 0] if x == 'y' else [0, 1])
+    # Convert the list of lists to a tensor
+    labels = torch.tensor(labels.tolist(), dtype=torch.float32)
+
     dataset = TensorDataset(input_ids, attention_masks, labels)
 
     total_size = len(dataset)
@@ -76,21 +80,22 @@ def train_bert():
 
     train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-    batch_size = 8
+    batch_size = 4
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     validation_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print("device: ", device)
     bert_model = BertModel.from_pretrained('bert-base-uncased')
     model = BERTClassifier(bert_model, output_dim=2)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), lr=1e-3)
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = AdamW(model.parameters(), lr=1e-6)
 
     # Training loop with validation
-    epochs = 4
+    epochs = 20
     for epoch in range(epochs):
         model.train()
         total_train_loss = 0
@@ -101,34 +106,49 @@ def train_bert():
 
             model.zero_grad()
             outputs = model(b_input_ids, b_attention_mask)
+            outputs = outputs.squeeze()
+            #print(outputs)
             loss = criterion(outputs, b_labels)
 
             loss.backward()
             optimizer.step()
 
             total_train_loss += loss.item()
-
+            
         print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {total_train_loss / len(train_dataloader)}")
 
         # Validation phase
         model.eval()
         total_eval_accuracy = 0
         total_eval_loss = 0
-
-        for batch in validation_dataloader:
-            batch = tuple(t.to(device) for t in batch)
-            b_input_ids, b_attention_mask, b_labels = batch
-
-            with torch.no_grad():
+        with torch.no_grad():
+            for batch in validation_dataloader:
+                batch = tuple(t.to(device) for t in batch)
+                b_input_ids, b_attention_mask, b_labels = batch
+                
                 outputs = model(b_input_ids, b_attention_mask)
+                outputs = outputs.squeeze()
+                #print("output:",outputs)
+                loss = criterion(outputs, b_labels)
+                #print("loss; ", loss)
+                total_eval_loss += loss.item()
+                #print("total_eval_loss ", total_eval_loss)
 
-            logits = outputs
-            loss = criterion(logits, b_labels)
-            total_eval_loss += loss.item()
+                # Convert logits to probabilities using sigmoid for binary classification
+                #probabilities = torch.sigmoid(outputs)
+                #print("Probabilities: ", probabilities)
 
-            preds = torch.argmax(logits, dim=1).flatten()
-            correct = (preds == b_labels).cpu().numpy()
-            total_eval_accuracy += correct.sum()
+                # Convert probabilities to predicted classes based on threshold
+                #preds = (probabilities >= 0.5).long()  # Compare against threshold and convert to long to match labels
+                preds = torch.argmax(outputs, dim=1)
+                #print("Predicted classes: ", preds)
+                b_labels_digit = torch.argmax(b_labels,dim=1)
+                #print("label: ", b_labels_digit)
+                # Compute number of correct predictions
+                correct = (preds == b_labels_digit).cpu().numpy()
+                total_eval_accuracy += correct.sum()
+                #print("Total accuracy: ", total_eval_accuracy)
+                
 
         avg_val_accuracy = total_eval_accuracy / len(val_dataset)
         avg_val_loss = total_eval_loss / len(validation_dataloader)
@@ -137,9 +157,11 @@ def train_bert():
 
 
 def train():
+    device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
+
     # Define the model
     sentence_hidden_dim = 128
-    document_hidden_dim = 256
+    document_hidden_dim = 64
     output_dim = 5
     num_layers = 1
 
@@ -147,10 +169,10 @@ def train():
     embedding_matrix = apply_word_embeddings(vocab)
 
     model = HierarchicalTextModel(embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers)
-
+    model.to(device)
     # Set training hyperparameters
-    batch_size = 16
-    learning_rate = 0.001
+    batch_size = 4
+    learning_rate = 0.00001
     epochs = 3
     wandb_on = False
 
@@ -168,6 +190,9 @@ def train():
         model.train()
         total_loss = 0
         for inputs, targets in train_loader:
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
@@ -183,6 +208,8 @@ def train():
         val_loss = 0
         with torch.no_grad():
             for inputs, targets in val_loader:
+                inputs = inputs.to(device)
+                targets = targets.to(device)
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
                 val_loss += loss.item()
