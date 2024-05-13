@@ -53,7 +53,7 @@ def expand_contractions(text, contractions_dict):
     
     return contractions_re.sub(replace, text)
 
-def split_text_into_sentence_force(text):
+def split_text_into_sentence_force(text, max_words=20):
     # Remove all characters that are not alphanumeric or spaces
     cleaned_text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
     
@@ -69,8 +69,8 @@ def split_text_into_sentence_force(text):
     
     # Now split all_words into chunks of 50 words each
     processed_sentences = []
-    for i in range(0, len(all_words), 50):
-        chunk = all_words[i:i + 50]
+    for i in range(0, len(all_words), max_words):
+        chunk = all_words[i:i + max_words]
         # Convert chunk of words back into a single sentence string
         if chunk:  # Ensure the chunk is not empty
             processed_sentences.append(' '.join(chunk))
@@ -103,6 +103,24 @@ def split_text_into_sentence(text):
                 processed_sentences.append(joined_sentence)
     
     return processed_sentences
+
+def normalize_sentences(doc):
+    # Ensure every sentence is a string
+    normalized_sentences = []
+    for sentence in doc:
+        if isinstance(sentence, list):
+            # If the sentence is a list of words, join them into a single string
+            normalized_sentence = ' '.join(sentence)
+        elif isinstance(sentence, str):
+            # If the sentence is already a string, use it as is
+            normalized_sentence = sentence
+        else:
+            # Handle unexpected types if necessary, using an empty string as fallback
+            normalized_sentence = ""
+        normalized_sentences.append(normalized_sentence)
+    return normalized_sentences
+
+
 
 #pre-padding
 def convert_tokens_to_indices(documents, vocab):
@@ -160,7 +178,7 @@ class EssaysDataset(Dataset):
     def __getitem__(self, idx):
         return torch.tensor(self.documents[idx], dtype=torch.long), torch.tensor(self.labels[idx], dtype=torch.float32)
 
-def preprocess_data():
+def preprocess_data(target_sentence_num=12, max_words=20):
     # Load dataset
     data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')  #Ensure the correct encoding is specified
 
@@ -168,11 +186,21 @@ def preprocess_data():
     data['TEXT'] = data['TEXT'].str.lower().apply(lambda x: expand_contractions(x, contractions_dict))
     data['TEXT'] = data['TEXT'].str.replace(r'[^a-zA-Z0-9\s\.]', '',regex=True)
     #print(data['TEXT'][0])
-    data['PROCESSED_TEXT']= data['TEXT'].apply(lambda x: split_text_into_sentence(x))
+    data['PROCESSED_TEXT']= data['TEXT'].apply(lambda x: split_text_into_sentence_force(x, max_words))
 
+    #median_sentences = int(np.median([len(doc) for doc in data['PROCESSED_TEXT']]))
+    target_sentence_num = target_sentence_num
+    # Adjust each document to have the median number of sentences
+    data['PROCESSED_TEXT'] = data['PROCESSED_TEXT'].apply(
+        lambda doc: [['<pad>']] * (target_sentence_num - len(doc)) + doc if len(doc) < target_sentence_num else doc[:target_sentence_num]
+    )
+
+    # Normalize all documents in the 'PROCESSED_TEXT' column
+    data['PROCESSED_TEXT'] = data['PROCESSED_TEXT'].apply(normalize_sentences)
+    
     # Tokenization
     tokenizer = get_tokenizer('basic_english')
-    tokenized_texts = [[tokenizer(text) for text in sentence]for sentence in data['PROCESSED_TEXT']]
+    tokenized_texts = [[tokenizer(sentence) for sentence in doc]for doc in data['PROCESSED_TEXT']]
     data['TOKENIZED_TEXT'] = tokenized_texts
 
     # Build vocabulary
@@ -249,7 +277,7 @@ def plot_wordcloud(text):
     plt.figure(figsize=(10, 5))
     plt.imshow(wordcloud, interpolation='bilinear')
     plt.axis('off')  # Turn off axis numbers and ticks
-    plt.savefig('wordcloud.png')
+    plt.savefig('Images/wordcloud.png')
 
 #train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
 #print(len(train_dataset), len(val_dataset), len(test_dataset), len(vocab))

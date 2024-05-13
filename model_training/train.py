@@ -17,7 +17,7 @@ import wandb
 from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
 
 
-def seed_everything(seed=23):
+def seed_everything(seed=42):
 
     random.seed(seed)
     np.random.seed(seed)
@@ -31,9 +31,9 @@ def seed_everything(seed=23):
 
 
 
-class HierarchicalTextModel(nn.Module):
-    def __init__(self, embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers=1):
-        super(HierarchicalTextModel, self).__init__()
+class Customized_LSTM(nn.Module):
+    def __init__(self, embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers=1, bidirectional=False, dropout=0.1):
+        super(Customized_LSTM, self).__init__()
         # Create the embedding layer pre-initialized
         vocab_size, embedding_dim = embedding_matrix.shape
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
@@ -41,29 +41,58 @@ class HierarchicalTextModel(nn.Module):
         self.embedding.weight.requires_grad = True  # Set False to freeze embeddings
         
         # Sentence-level LSTM
-        self.sentence_lstm = nn.LSTM(embedding_dim, sentence_hidden_dim, batch_first=True, num_layers=num_layers)
+        self.sentence_lstm = nn.LSTM(
+            embedding_dim, 
+            sentence_hidden_dim, 
+            batch_first=True, 
+            num_layers=num_layers, 
+            bidirectional=bidirectional,
+            dropout=dropout if num_layers > 1 else 0
+        )
         
         # Document-level LSTM
-        self.document_lstm = nn.LSTM(sentence_hidden_dim, document_hidden_dim, batch_first=True, num_layers=num_layers)
+        self.document_lstm = nn.LSTM(
+            sentence_hidden_dim * (2 if bidirectional else 1), 
+            document_hidden_dim, 
+            batch_first=True, 
+            num_layers=num_layers, 
+            bidirectional=bidirectional,
+            dropout=dropout if num_layers > 1 else 0
+        )
+        
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
         
         # Fully connected layer for classification
-        self.fc = nn.Linear(document_hidden_dim, output_dim)
+        self.fc = nn.Linear(document_hidden_dim * (2 if bidirectional else 1), output_dim)
         
     def forward(self, documents):
         batch_size, num_sentences, sentence_length = documents.shape
         
         documents = documents.view(-1, sentence_length)
         embedded_sentences = self.embedding(documents)
-        
+        embedded_sentences = embedded_sentences[:,:8]
         _, (sentence_hidden, _) = self.sentence_lstm(embedded_sentences)
-        sentence_hidden = sentence_hidden[-1]
+        
+        if self.sentence_lstm.bidirectional:
+            sentence_hidden = torch.cat((sentence_hidden[-2], sentence_hidden[-1]), dim=1)
+        else:
+            sentence_hidden = sentence_hidden[-1]
         
         sentence_hidden = sentence_hidden.view(batch_size, num_sentences, -1)
-        
+        sentence_hidden = sentence_hidden[:,:12]
         _, (document_hidden, _) = self.document_lstm(sentence_hidden)
-        document_hidden = document_hidden[-1]
+        
+        if self.document_lstm.bidirectional:
+            document_hidden = torch.cat((document_hidden[-2], document_hidden[-1]), dim=1)
+        else:
+            document_hidden = document_hidden[-1]
+        
+        document_hidden = self.dropout(document_hidden)
         
         output = self.fc(document_hidden)
+        output = torch.sigmoid(output)
+
         return output
 
 class BERTClassifier(nn.Module):
@@ -90,7 +119,7 @@ def train_bert():
     model_name = 'prajjwal1/bert-small'
     trait_number = 5
     batch_size = 16
-    epochs = 50
+    epochs = 1
 
     # Prepare data for BERT
     input_ids, attention_masks = prepare_data_for_bert(model_name,raw_texts, max_length)
@@ -350,35 +379,164 @@ def bert_sweep_setup():
     # Finish the wandb run
     wandb.finish()
 
+def run_lstm_sweep():
+    sweep_config = {
+        'method': 'random',  # 'grid', 'random', or 'bayes'
+        'metric': {
+            'name': 'val_loss',
+            'goal': 'minimize'   
+        },
+        'parameters': {
+            'learning_rate': {
+                'min': 1e-6,
+                'max': 1e-4
+            },
+            'batch_size': {
+                'values': [4, 8, 16, 32]
+            },
+            'epochs': {
+                'values': [30,50]  # Shorter for quick sweeps
+            },
+            'sentence_hidden_dim': {
+                'values': [128, 256, 512]
+            },
+            'document_hidden_dim': {
+                'values': [128, 256, 512]
+            },
+            'optimizer': {
+                'values': ['adam', 'adamw']
+            }
+        }
+    }
 
-def train():
+    sweep_id = wandb.sweep(sweep_config, project="nlp-personality-prediction")
+    wandb.agent(sweep_id, lstm_sweep_setup, count=20)
+
+def lstm_sweep_setup():
+    wandb.init(project="nlp-personality-prediction")
+
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
 
-    # Define the model
-    sentence_hidden_dim = 128
-    document_hidden_dim = 64
-    output_dim = 5
+    # Use wandb config
+    sentence_hidden_dim = wandb.config.sentence_hidden_dim
+    document_hidden_dim = wandb.config.document_hidden_dim
+    batch_size = wandb.config.batch_size
+    learning_rate = wandb.config.learning_rate
+    epochs = wandb.config.epochs
+    optimizer_type = wandb.config.optimizer
+    trait_num = 5
     num_layers = 1
 
     train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
     embedding_matrix = apply_word_embeddings(vocab)
 
-    model = HierarchicalTextModel(embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers)
+    model = Customized_LSTM(embedding_matrix, sentence_hidden_dim, document_hidden_dim, trait_num, num_layers)
     model.to(device)
-    # Set training hyperparameters
-    batch_size = 4
-    learning_rate = 0.00001
-    epochs = 3
-    wandb_on = False
 
     # Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
+    if optimizer_type == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    elif optimizer_type == 'adamw':
+        optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+    else:
+        raise ValueError(f"Unsupported optimizer type: {optimizer_type}")
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
 
+    # Training phase
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        for inputs, targets in train_loader:
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        
+        train_loss_epoch_avg = total_loss / len(train_loader)
+        wandb.log({"epoch": epoch + 1, "train_loss": train_loss_epoch_avg})
+        
+        # Validation phase
+        model.eval()
+        total_eval_correct = 0
+        total_eval = 0
+        total_eval_loss = 0
+        total_eval_correct_col = np.zeros(trait_num)
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                total_eval_loss += loss.item()
+
+                # Convert probabilities to predicted classes based on threshold
+                preds = (outputs >= 0.5).long() 
+                correct = (preds == targets).cpu().numpy()
+                total_eval_correct += correct.sum()
+                total_eval_correct_col += correct.sum(axis=0)
+                total_eval += correct.size
+            
+            avg_val_accuracy = total_eval_correct / total_eval
+            avg_val_accuracy_col = total_eval_correct_col / (total_eval/trait_num)
+            avg_val_loss = total_eval_loss / len(val_loader)
+
+            wandb.log({"val_loss": avg_val_loss, "val_accuracy": avg_val_accuracy})
+
+    wandb.finish()
+
+def train():
+    device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
+
+    # Define the model
+    sentence_hidden_dim = 256
+    document_hidden_dim = 512
+    trait_num = 5
+    num_layers = 1
+    batch_size = 16
+    learning_rate = 0.005
+    epochs = 20
+
+    train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
+    embedding_matrix = apply_word_embeddings(vocab)
+
+    model = Customized_LSTM(embedding_matrix, sentence_hidden_dim=128, document_hidden_dim=128, output_dim=trait_num, num_layers=2, bidirectional=True, dropout=0.1)
+    model.to(device)
+
+    # Create DataLoaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
+    criterion = nn.BCEWithLogitsLoss()
+
+    wandb_on = False
+    if wandb_on:
+        wandb.init(
+            project="nlp-personality-prediction",
+            config={
+                "model": model,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "sentence_hidden_dim": sentence_hidden_dim,
+                "document_hidden_dim": document_hidden_dim,
+                "optimizer": optimizer,
+                "criterion": criterion,
+                "trait_number": trait_num,
+            },
+            notes="None",
+            )
     # Assume the model and other components are set up as before
     for epoch in range(epochs):
         # Training Phase
@@ -400,34 +558,48 @@ def train():
         
         # Validation Phase
         model.eval()
-        val_loss = 0
+        total_eval_correct = 0
+        total_eval = 0
+        total_eval_loss = 0
+        total_eval_correct_col = np.zeros(trait_num)
         with torch.no_grad():
             for inputs, targets in val_loader:
                 inputs = inputs.to(device)
                 targets = targets.to(device)
                 outputs = model(inputs)
                 loss = criterion(outputs, targets)
-                val_loss += loss.item()
+                total_eval_loss += loss.item()
+
+                # Convert probabilities to predicted classes based on threshold
+                preds = (outputs >= 0.5).long() 
+                correct = (preds == targets).cpu().numpy()
+                total_eval_correct += correct.sum()
+                total_eval_correct_col += correct.sum(axis=0)
+                total_eval += correct.size
             
-            val_loss_epoch_avg = val_loss / len(val_loader)
-        print(f"Epoch {epoch + 1}, Validation Loss: {val_loss_epoch_avg}")
-        if wandb_on: wandb.log({"epoch": epoch, "train loss": train_loss_epoch_avg, "val loss": val_loss_epoch_avg})
+            avg_val_accuracy = total_eval_correct / total_eval
+            avg_val_accuracy_col = total_eval_correct_col / (total_eval/trait_num)
+            avg_val_loss = total_eval_loss / len(val_loader)
 
-    # Testing Phase
-    model.eval()
-    y_pred = []
-    y_true = []
-    with torch.no_grad():
-        for texts, labels in test_loader:
-            predictions = model(texts)
-            predictions = torch.sigmoid(predictions).round()  # Convert to binary predictions
-            y_pred.extend(predictions.numpy())
-            y_true.extend(labels.numpy())
+        print(f"Epoch {epoch + 1}, Validation Loss: {avg_val_loss}, Validation Accuracy: {avg_val_accuracy}, Validation Accuracy per trait: {avg_val_accuracy_col}")
+        #if wandb_on: wandb.log({"epoch": epoch, "train loss": train_loss_epoch_avg, "val loss": avg_val_loss})
 
-    # Calculate accuracy for each trait
-    y_pred = np.array(y_pred)
-    y_true = np.array(y_true)
-    trait_names = ['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']
-    for i, trait in enumerate(trait_names):
-        trait_accuracy = accuracy_score(y_true[:, i], y_pred[:, i])
-        print(f'Accuracy for {trait}: {trait_accuracy:.4f}')
+    if False:
+        # Testing Phase
+        model.eval()
+        y_pred = []
+        y_true = []
+        with torch.no_grad():
+            for texts, labels in test_loader:
+                predictions = model(texts)
+                predictions = torch.sigmoid(predictions).round()  # Convert to binary predictions
+                y_pred.extend(predictions.numpy())
+                y_true.extend(labels.numpy())
+
+        # Calculate accuracy for each trait
+        y_pred = np.array(y_pred)
+        y_true = np.array(y_true)
+        trait_names = ['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']
+        for i, trait in enumerate(trait_names):
+            trait_accuracy = accuracy_score(y_true[:, i], y_pred[:, i])
+            print(f'Accuracy for {trait}: {trait_accuracy:.4f}')
