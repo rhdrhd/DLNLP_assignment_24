@@ -1,5 +1,7 @@
 import pandas as pd
 import torch
+import torchtext
+torchtext.disable_torchtext_deprecation_warning()
 from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
 from torch.nn.utils.rnn import pad_sequence
@@ -51,28 +53,58 @@ def expand_contractions(text, contractions_dict):
     
     return contractions_re.sub(replace, text)
 
-def split_text_into_sentence(text):
-    # Normalize the text by converting to lowercase and removing unwanted characters
-    #normalized_text = re.sub(r'[^a-zA-Z0-9!\'\"]', ' ', text.lower())
+def split_text_into_sentence_force(text):
+    # Remove all characters that are not alphanumeric or spaces
+    cleaned_text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
     
-    # Split the text into sentences using periods and question marks
-    sentences = re.split(r'[.\n]', text)
+    # Split using period followed by whitespace or end of text to denote sentence boundaries
+    sentences = re.split(r'\.\s+|\.$', cleaned_text)
     
-    # Process each sentence
-    processed_sentences = []
+    # Join all sentences into one single text
+    all_words = []
     for sentence in sentences:
         words = sentence.split()
-        # Check if the sentence is longer than 100 words
-        if len(words) > 100:
-            # Split the long sentence into smaller chunks of 20 words each
-            for i in range(0, len(words), 20):
-                chunk = words[i:i+20]
-                processed_sentences.append(' '.join(chunk))
-        elif len(words) > 1:
-            processed_sentences.append(' '.join(words))
+        if words:  # Check if the sentence is not empty
+            all_words.extend(words)
+    
+    # Now split all_words into chunks of 50 words each
+    processed_sentences = []
+    for i in range(0, len(all_words), 50):
+        chunk = all_words[i:i + 50]
+        # Convert chunk of words back into a single sentence string
+        if chunk:  # Ensure the chunk is not empty
+            processed_sentences.append(' '.join(chunk))
     
     return processed_sentences
 
+def split_text_into_sentence(text):
+    # Split using period followed by whitespace or end of text to denote sentence boundaries
+    sentences = re.split(r'\.\s+|\.$', text)
+    
+    # Process each sentence to handle long sentences, remove empty sentences, and skip short sentences
+    processed_sentences = []
+    for sentence in sentences:
+        words = sentence.split()
+        # Skip any empty sentences or sentences shorter than 10 words
+        if len(words) < 20:
+            continue
+        
+        # If the sentence is longer than 100 words, chunk it into parts of 50 words each
+        if len(words) > 100:
+            for i in range(0, len(words), 50):
+                chunk = words[i:i + 50]
+                # Ensure the chunk is not empty and meets the minimum word count
+                if len(chunk) >= 20:
+                    processed_sentences.append(' '.join(chunk))
+        else:
+            # Add the sentence if it meets the minimum word count
+            joined_sentence = ' '.join(words)
+            if joined_sentence:
+                processed_sentences.append(joined_sentence)
+    
+    return processed_sentences
+
+#pre-padding
 def convert_tokens_to_indices(documents, vocab):
     max_sentences = max(len(doc) for doc in documents)
     max_len = max(len(sentence) for doc in documents for sentence in doc)
@@ -82,12 +114,12 @@ def convert_tokens_to_indices(documents, vocab):
         indexed_sentences = []
         for sentence in doc:
             indexed_sentence = [vocab[token] for token in sentence]
-            # Pad each sentence to max_len
-            indexed_sentence += [vocab["<pad>"]] * (max_len - len(indexed_sentence))
+            # Pre-pad each sentence to max_len
+            indexed_sentence = [vocab["<pad>"]] * (max_len - len(indexed_sentence)) + indexed_sentence
             indexed_sentences.append(indexed_sentence)
-        # Pad the number of sentences in each document
+        # Pre-pad the number of sentences in each document
         while len(indexed_sentences) < max_sentences:
-            indexed_sentences.append([vocab["<pad>"]] * max_len)
+            indexed_sentences = [[vocab["<pad>"]] * max_len] + indexed_sentences
         indexed_documents.append(indexed_sentences)
 
     indexed_documents_tensor = torch.tensor(indexed_documents)
@@ -152,6 +184,7 @@ def preprocess_data():
 
     # Initialize Labels
     labels = data[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']].replace({'y': 1, 'n': 0}).values
+    #labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
     labels_tensor = torch.tensor(labels, dtype=torch.float32)
  
     # Initialize the dataset
@@ -167,8 +200,8 @@ def preprocess_data():
 
     return train_dataset,  val_dataset, test_dataset, vocab
 
-def prepare_data_for_bert(texts, max_length):
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+def prepare_data_for_bert(model, texts, max_length):
+    tokenizer = BertTokenizer.from_pretrained(model)
 
     input_ids = []
     attention_masks = []
@@ -178,18 +211,31 @@ def prepare_data_for_bert(texts, max_length):
             text,                      # Text to encode
             add_special_tokens=True,   # Add '[CLS]' and '[SEP]'
             max_length=max_length,     # Pad & truncate all sentences
-            padding='max_length',      # Pad all to max length
+            padding='max_length',      # Temporarily pad all to max length
             return_attention_mask=True,# Construct attn. masks
             truncation=True,           # Ensure below max_length
             return_tensors='pt',       # Return pytorch tensors
         )
-
-        input_ids.append(encoded_dict['input_ids'])
-        attention_masks.append(encoded_dict['attention_mask'])
+        
+        # Manually shift padding to the front for pre-padding
+        input_id = encoded_dict['input_ids'][0]
+        attention_mask = encoded_dict['attention_mask'][0]
+        
+        # Count the number of padding tokens
+        pad_count = (input_id == tokenizer.pad_token_id).sum().item()
+        
+        # Create pre-padded input_id and attention_mask
+        pre_padded_input_id = torch.cat([torch.full((pad_count,), tokenizer.pad_token_id, dtype=torch.long),
+                                         input_id[input_id != tokenizer.pad_token_id]])
+        pre_padded_attention_mask = torch.cat([torch.zeros(pad_count, dtype=torch.long),
+                                               attention_mask[attention_mask == 1]])
+        
+        input_ids.append(pre_padded_input_id)
+        attention_masks.append(pre_padded_attention_mask)
 
     # Convert lists to tensors
-    input_ids = torch.cat(input_ids, dim=0)
-    attention_masks = torch.cat(attention_masks, dim=0)
+    input_ids = torch.stack(input_ids)
+    attention_masks = torch.stack(attention_masks)
 
     return input_ids, attention_masks
 
@@ -207,3 +253,4 @@ def plot_wordcloud(text):
 
 #train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
 #print(len(train_dataset), len(val_dataset), len(test_dataset), len(vocab))
+#preprocess_data()

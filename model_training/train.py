@@ -1,14 +1,34 @@
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
-from transformers import BertModel, BertTokenizer, AdamW
-import torch.optim as optim
+# Standard library imports
+import os
+import random
+
+# Third-party library imports
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, Dataset, TensorDataset, random_split
+from transformers import BertModel, BertTokenizer
 from sklearn.metrics import accuracy_score
-from torch.utils.data import Dataset, random_split
-from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
 import wandb
+
+# Local module imports
+from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
+
+
+def seed_everything(seed=23):
+
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) 
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
 
 class HierarchicalTextModel(nn.Module):
@@ -57,19 +77,30 @@ class BERTClassifier(nn.Module):
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         # Use the pooled output for classification
         pooled_output = outputs.pooler_output
-        return self.fc(pooled_output)
+        probs = self.fc(pooled_output)
+        preds = torch.sigmoid(probs)
+        return preds
 
 def train_bert():
     data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')
     raw_texts = data['TEXT'].tolist()
-    max_length = 512
 
-    input_ids, attention_masks = prepare_data_for_bert(raw_texts, max_length)
-    #labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
-    #labels = torch.tensor(labels, dtype=torch.float32).squeeze()  # If binary classification, keep float.
-    labels = data['cEXT'].apply(lambda x: [1, 0] if x == 'y' else [0, 1])
-    # Convert the list of lists to a tensor
-    labels = torch.tensor(labels.tolist(), dtype=torch.float32)
+    # Model config
+    max_length = 512
+    model_name = 'prajjwal1/bert-small'
+    trait_number = 5
+    batch_size = 16
+    epochs = 50
+
+    # Prepare data for BERT
+    input_ids, attention_masks = prepare_data_for_bert(model_name,raw_texts, max_length)
+
+    if trait_number == 1:
+        labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
+        labels = torch.tensor(labels.tolist(), dtype=torch.float32).squeeze()
+    else:
+        labels = data[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']].replace({'y': 1, 'n': 0}).values
+        labels = torch.tensor(labels.tolist(), dtype=torch.float32)
 
     dataset = TensorDataset(input_ids, attention_masks, labels)
 
@@ -80,22 +111,38 @@ def train_bert():
 
     train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
-    batch_size = 4
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    validation_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    validation_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,drop_last=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("device: ", device)
-    bert_model = BertModel.from_pretrained('bert-base-uncased')
-    model = BERTClassifier(bert_model, output_dim=2)
+    bert_model = BertModel.from_pretrained(model_name)
+    model = BERTClassifier(bert_model, output_dim=trait_number)
     model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = AdamW(model.parameters(), lr=1e-6)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-6)
 
-    # Training loop with validation
-    epochs = 20
+    
+    wandb_on = False
+    if wandb_on:
+        wandb.init(
+            project="nlp-personality-prediction",
+            config={
+                "model": model_name,
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "max_length": max_length,
+                "model_name": model_name,
+                "optimizer": optimizer,
+                "criterion": criterion,
+                "trait_number": trait_number,
+            },
+            notes="None",
+            )
+    
+    # Training
     for epoch in range(epochs):
         model.train()
         total_train_loss = 0
@@ -119,8 +166,10 @@ def train_bert():
 
         # Validation phase
         model.eval()
-        total_eval_accuracy = 0
+        total_eval_correct = 0
+        total_eval = 0
         total_eval_loss = 0
+        total_eval_correct_col = np.zeros(5)
         with torch.no_grad():
             for batch in validation_dataloader:
                 batch = tuple(t.to(device) for t in batch)
@@ -128,32 +177,178 @@ def train_bert():
                 
                 outputs = model(b_input_ids, b_attention_mask)
                 outputs = outputs.squeeze()
-                #print("output:",outputs)
-                loss = criterion(outputs, b_labels)
-                #print("loss; ", loss)
-                total_eval_loss += loss.item()
-                #print("total_eval_loss ", total_eval_loss)
 
-                # Convert logits to probabilities using sigmoid for binary classification
-                #probabilities = torch.sigmoid(outputs)
-                #print("Probabilities: ", probabilities)
+                loss = criterion(outputs, b_labels)
+ 
+                total_eval_loss += loss.item()
 
                 # Convert probabilities to predicted classes based on threshold
-                #preds = (probabilities >= 0.5).long()  # Compare against threshold and convert to long to match labels
-                preds = torch.argmax(outputs, dim=1)
-                #print("Predicted classes: ", preds)
-                b_labels_digit = torch.argmax(b_labels,dim=1)
-                #print("label: ", b_labels_digit)
-                # Compute number of correct predictions
-                correct = (preds == b_labels_digit).cpu().numpy()
-                total_eval_accuracy += correct.sum()
-                #print("Total accuracy: ", total_eval_accuracy)
+                preds = (outputs >= 0.5).long() 
+                correct = (preds == b_labels).cpu().numpy()
+                total_eval_correct += correct.sum()
+                total_eval_correct_col += correct.sum(axis=0)
+                total_eval += correct.size
                 
-
-        avg_val_accuracy = total_eval_accuracy / len(val_dataset)
+        avg_val_accuracy = total_eval_correct / total_eval
+        avg_val_accuracy_col = total_eval_correct_col / (total_eval/trait_number)
         avg_val_loss = total_eval_loss / len(validation_dataloader)
 
-        print(f"Validation Loss: {avg_val_loss}, Validation Accuracy: {avg_val_accuracy}")
+        print(f"Validation Loss: {avg_val_loss}, Validation Accuracy: {avg_val_accuracy}, Validation Accuracy per trait: {avg_val_accuracy_col}")
+
+        # Test phase
+        model.eval()
+        total_test_correct = 0
+        total_test = 0
+        total_test_correct_col = np.zeros(5)
+        with torch.no_grad():
+            for batch in test_dataloader:
+                batch = tuple(t.to(device) for t in batch)
+                b_input_ids, b_attention_mask, b_labels = batch
+                
+                outputs = model(b_input_ids, b_attention_mask)
+                outputs = outputs.squeeze()
+
+                # Convert probabilities to predicted classes based on threshold
+                preds = (outputs >= 0.5).long() 
+                correct = (preds == b_labels).cpu().numpy()
+                total_test_correct += correct.sum()
+                total_test_correct_col += correct.sum(axis=0)
+                total_test += correct.size
+        
+        avg_test_accuracy = total_test_correct / total_test
+        avg_test_accuracy_col = total_test_correct_col / (total_test/trait_number)
+
+        print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
+
+def run_bert_sweep():
+    sweep_config = {
+        'method': 'random',  # 'grid', 'random', or 'bayes'
+        'metric': {
+            'name': 'val_accuracy',
+            'goal': 'maximize'   
+        },
+        'parameters': {
+            'learning_rate': {
+                'min': 1e-6,
+                'max': 1e-4
+            },
+            'batch_size': {
+                'values': [16, 32]
+            },
+            'epochs': {
+                'values': [1, 2]  # Shorter for quick sweeps
+            }
+        }
+    }
+
+    sweep_id = wandb.sweep(sweep_config, project="nlp-personality-prediction")
+    wandb.agent(sweep_id, bert_sweep_setup, count=20)
+
+def bert_sweep_setup():
+
+
+    wandb.init(project="nlp-personality-prediction")
+
+    data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')
+    raw_texts = data['TEXT'].tolist()
+
+    # Model config
+    max_length = 512
+    model_name = 'prajjwal1/bert-small'
+    trait_number = 5
+    batch_size = wandb.config.batch_size  # Use wandb config
+    epochs = wandb.config.epochs  # Use wandb config
+
+    # Prepare data for BERT
+    input_ids, attention_masks = prepare_data_for_bert(model_name,raw_texts, max_length)
+
+    if trait_number == 1:
+        labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
+        labels = torch.tensor(labels.tolist(), dtype=torch.float32).squeeze()
+    else:
+        labels = data[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']].replace({'y': 1, 'n': 0}).values
+        labels = torch.tensor(labels.tolist(), dtype=torch.float32)
+
+    dataset = TensorDataset(input_ids, attention_masks, labels)
+
+    total_size = len(dataset)
+    train_size = int(0.7 * total_size)
+    val_size = int(0.15 * total_size)
+    test_size = total_size - train_size - val_size
+
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    validation_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False,drop_last=True)
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print("device: ", device)
+    bert_model = BertModel.from_pretrained(model_name)
+    model = BERTClassifier(bert_model, output_dim=trait_number)
+    model.to(device)
+
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=1e-6)
+
+    
+    # Training
+    for epoch in range(epochs):
+        model.train()
+        total_train_loss = 0
+
+        for batch in train_dataloader:
+            batch = tuple(t.to(device) for t in batch)
+            b_input_ids, b_attention_mask, b_labels = batch
+
+            model.zero_grad()
+            outputs = model(b_input_ids, b_attention_mask)
+            outputs = outputs.squeeze()
+            #print(outputs)
+            loss = criterion(outputs, b_labels)
+
+            loss.backward()
+            optimizer.step()
+
+            total_train_loss += loss.item()
+            
+        # Log training loss to wandb
+        wandb.log({"epoch": epoch + 1, "train_loss": total_train_loss / len(train_dataloader)})
+
+        # Validation phase
+        model.eval()
+        total_eval_correct = 0
+        total_eval = 0
+        total_eval_loss = 0
+        total_eval_correct_col = np.zeros(5)
+        with torch.no_grad():
+            for batch in validation_dataloader:
+                batch = tuple(t.to(device) for t in batch)
+                b_input_ids, b_attention_mask, b_labels = batch
+                
+                outputs = model(b_input_ids, b_attention_mask)
+                outputs = outputs.squeeze()
+
+                loss = criterion(outputs, b_labels)
+ 
+                total_eval_loss += loss.item()
+
+                # Convert probabilities to predicted classes based on threshold
+                preds = (outputs >= 0.5).long() 
+                correct = (preds == b_labels).cpu().numpy()
+                total_eval_correct += correct.sum()
+                total_eval_correct_col += correct.sum(axis=0)
+                total_eval += correct.size
+                
+        avg_val_accuracy = total_eval_correct / total_eval
+        avg_val_accuracy_col = total_eval_correct_col / (total_eval/trait_number)
+        avg_val_loss = total_eval_loss / len(validation_dataloader)
+
+        # Log validation metrics to wandb
+        wandb.log({"val_loss": avg_val_loss, "val_accuracy": avg_val_accuracy})
+
+    # Finish the wandb run
+    wandb.finish()
 
 
 def train():
