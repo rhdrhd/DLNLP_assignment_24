@@ -24,6 +24,10 @@ X_test_counts = vectorizer.transform(X_test)
 models = {}
 scores = {}
 
+# To compute overall accuracy
+total_correct = 0
+total_predictions = 0
+
 for label in label_columns:
     model = LogisticRegression()
     model.fit(X_train_counts, y_train[label])
@@ -32,8 +36,16 @@ for label in label_columns:
     y_pred = model.predict(X_test_counts)
     accuracy = accuracy_score(y_test[label], y_pred)
     scores[label] = accuracy
+    
+    # Calculate overall accuracy
+    total_correct += (y_pred == y_test[label]).sum()
+    total_predictions += len(y_pred)
 
 # Output the results
 print("Accuracy scores for each personality trait:")
 for label in scores:
     print(f"{label}: {scores[label]:.2f}")
+
+# Overall accuracy
+overall_accuracy = total_correct / total_predictions
+print(f"Overall accuracy across all traits: {overall_accuracy:.2f}")
