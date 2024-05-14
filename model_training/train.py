@@ -118,8 +118,9 @@ def train_bert():
     max_length = 512
     model_name = 'prajjwal1/bert-small'
     trait_number = 5
-    batch_size = 16
-    epochs = 1
+    batch_size = 8
+    epochs = 50
+
 
     # Prepare data for BERT
     input_ids, attention_masks = prepare_data_for_bert(model_name,raw_texts, max_length)
@@ -170,7 +171,12 @@ def train_bert():
             },
             notes="None",
             )
-    
+    # Initialize best validation accuracy
+    best_val_accuracy = 0.0
+    best_val_loss = float('inf')
+    # Define model saving path
+    model_save_path = 'best_model.pth'
+
     # Training
     for epoch in range(epochs):
         model.train()
@@ -183,16 +189,18 @@ def train_bert():
             model.zero_grad()
             outputs = model(b_input_ids, b_attention_mask)
             outputs = outputs.squeeze()
-            #print(outputs)
             loss = criterion(outputs, b_labels)
 
             loss.backward()
             optimizer.step()
 
             total_train_loss += loss.item()
-            
-        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {total_train_loss / len(train_dataloader)}")
-
+        
+        avg_train_loss = total_train_loss / len(train_dataloader)
+        print(f"Epoch {epoch + 1}/{epochs}, Training Loss: {avg_train_loss}")
+        if wandb_on:
+            wandb.log({"epoch": epoch + 1, "train_loss": avg_train_loss})
+        
         # Validation phase
         model.eval()
         total_eval_correct = 0
@@ -208,10 +216,8 @@ def train_bert():
                 outputs = outputs.squeeze()
 
                 loss = criterion(outputs, b_labels)
- 
                 total_eval_loss += loss.item()
 
-                # Convert probabilities to predicted classes based on threshold
                 preds = (outputs >= 0.5).long() 
                 correct = (preds == b_labels).cpu().numpy()
                 total_eval_correct += correct.sum()
@@ -223,31 +229,44 @@ def train_bert():
         avg_val_loss = total_eval_loss / len(validation_dataloader)
 
         print(f"Validation Loss: {avg_val_loss}, Validation Accuracy: {avg_val_accuracy}, Validation Accuracy per trait: {avg_val_accuracy_col}")
-
-        # Test phase
-        model.eval()
-        total_test_correct = 0
-        total_test = 0
-        total_test_correct_col = np.zeros(5)
-        with torch.no_grad():
-            for batch in test_dataloader:
-                batch = tuple(t.to(device) for t in batch)
-                b_input_ids, b_attention_mask, b_labels = batch
-                
-                outputs = model(b_input_ids, b_attention_mask)
-                outputs = outputs.squeeze()
-
-                # Convert probabilities to predicted classes based on threshold
-                preds = (outputs >= 0.5).long() 
-                correct = (preds == b_labels).cpu().numpy()
-                total_test_correct += correct.sum()
-                total_test_correct_col += correct.sum(axis=0)
-                total_test += correct.size
+        if wandb_on:
+            wandb.log({"val_loss": avg_val_loss, "val_accuracy": avg_val_accuracy})
         
-        avg_test_accuracy = total_test_correct / total_test
-        avg_test_accuracy_col = total_test_correct_col / (total_test/trait_number)
+        # Check if this is the best model based on validation accuracy
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            # Save the model
+            torch.save(model.state_dict(), model_save_path)
+            print(f"New best model saved with validation loss: {best_val_loss}, and accuracy {avg_val_accuracy}")
 
-        print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
+        
+    # Test phase
+    model.load_state_dict(torch.load(model_save_path, map_location=device))
+    model.to(device)
+    model.eval()
+    total_test_correct = 0
+    total_test = 0
+    total_test_correct_col = np.zeros(5)
+    with torch.no_grad():
+        for batch in test_dataloader:
+            batch = tuple(t.to(device) for t in batch)
+            b_input_ids, b_attention_mask, b_labels = batch
+            
+            outputs = model(b_input_ids, b_attention_mask)
+            outputs = outputs.squeeze()
+
+            # Convert probabilities to predicted classes based on threshold
+            preds = (outputs >= 0.5).long() 
+            correct = (preds == b_labels).cpu().numpy()
+            total_test_correct += correct.sum()
+            total_test_correct_col += correct.sum(axis=0)
+            total_test += correct.size
+    
+    avg_test_accuracy = total_test_correct / total_test
+    avg_test_accuracy_col = total_test_correct_col / (total_test/trait_number)
+
+    print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
+        
 
 def run_bert_sweep():
     sweep_config = {
@@ -293,6 +312,7 @@ def bert_sweep_setup():
     trait_number = 5
     batch_size = wandb.config.batch_size  # Use wandb config
     epochs = wandb.config.epochs  # Use wandb config
+    learning_rate = 1e-6
 
     # Prepare data for BERT
     input_ids, attention_masks = prepare_data_for_bert(model_name,raw_texts, max_length)
@@ -324,7 +344,7 @@ def bert_sweep_setup():
     model.to(device)
 
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=1e-6)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
     
     # Training

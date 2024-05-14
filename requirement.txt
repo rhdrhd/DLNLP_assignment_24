@@ -6,3 +6,4 @@ torchaudio
 torchtext=0.18.0
 wordcloud
 gensim
+openai==0.28.0

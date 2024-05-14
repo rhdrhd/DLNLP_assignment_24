@@ -1,59 +1,119 @@
 import pandas as pd
 import openai
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import json
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+)  # for exponential backoff
 
 # Initialize the OpenAI client with your API key
-openai.api_key = 'sk-YourAPIKeyHere' 
+openai.api_key = 'sk-YourAPIKeyHere'
+
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
+def completion_with_backoff(**kwargs):
+    return openai.ChatCompletion.create(**kwargs)
 
 def load_dataset(filepath: str) -> pd.DataFrame:
     """
     Load the essays dataset with binary Big Five personality trait scores.
     """
-    return pd.read_csv(filepath, encoding='mac_roman')
+    try:
+        df = pd.read_csv(filepath, encoding='mac_roman')
+        if 'TEXT' not in df.columns:
+            raise ValueError("The required column 'TEXT' is not present in the dataset.")
+        return df
+    except Exception as e:
+        raise ValueError(f"Error loading dataset: {e}")
 
-def analyze_personality(essays: List[str]) -> List[Dict[str, int]]:
+def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot: bool = False) -> str:
+    """
+    Create a few-shot learning prompt with multiple examples or a zero-shot prompt.
+
+    Parameters:
+    - examples: DataFrame containing example essays and their trait scores.
+    - target_essay: The essay to be analyzed.
+    - zero_shot: Whether to create a zero-shot prompt (no examples).
+
+    Returns:
+    - prompt: A formatted string to be used as the prompt for the model.
+    """
+    prompt = """
+    Analyze the following text and determine if the author exhibits the following traits:
+    - Extraversion (cEXT)
+    - Neuroticism (cNEU)
+    - Agreeableness (cAGR)
+    - Conscientiousness (cCON)
+    - Openness (cOPN)
+
+    Please provide results in JSON format without further explanation and without indicating it is a JSON file.
+    
+    The rules are as follows:
+        "cEXT": 0,  # 1 if Extraversion is exhibited, 0 if not
+        "cNEU": 0,  # 1 if Neuroticism is exhibited, 0 if not
+        "cAGR": 0,  # 1 if Agreeableness is exhibited, 0 if not
+        "cCON": 0,  # 1 if Conscientiousness is exhibited, 0 if not
+        "cOPN": 0   # 1 if Openness is exhibited, 0 if not
+    """
+
+    if not zero_shot:
+        for _, row in examples.iterrows():
+            prompt += f"""
+            Example:
+            Analyze the essay:
+            "{row['TEXT']}"
+
+            {{
+                "cEXT": {1 if row['cEXT'] == 'y' else 0},
+                "cNEU": {1 if row['cNEU'] == 'y' else 0}, 
+                "cAGR": {1 if row['cAGR'] == 'y' else 0}, 
+                "cCON": {1 if row['cCON'] == 'y' else 0}, 
+                "cOPN": {1 if row['cOPN'] == 'y' else 0}  
+            }}
+            """
+
+    prompt += f"""
+    Analyze the essay:
+    {target_essay}
+    """
+    
+    return prompt
+
+def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[List[Dict[str, int]], int, pd.DataFrame]:
     """
     Sends essays to ChatGPT and retrieves predicted binary personality traits.
+    If an analysis is missed, the corresponding row in `dataset` is dropped.
+
+    Parameters:
+    - dataset: DataFrame containing the essays and actual data.
+    - example_count: Number of examples to use for few-shot learning. Zero means zero-shot learning.
+
+    Returns:
+    - results: List of dictionaries containing the predicted binary personality traits.
+    - miss_count: Number of missed analyses.
+    - filtered_actual: DataFrame with rows corresponding to missed analyses dropped.
     """
+    essays = dataset['TEXT'].tolist()
+    actual = dataset[['TEXT', 'cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']]
     results = []
     miss_count = 0
-    for essay in essays:
-        prompt = f"""Analyze the following text and determine if the author exhibits the following traits:
-        - Extraversion (cEXT)
-        - Neuroticism (cNEU)
-        - Agreeableness (cAGR)
-        - Conscientiousness (cCON)
-        - Openness (cOPN)
+    successful_indices = []
 
-        Please provide results in JSON format without further explanation and without indicating it is json file. 
-        
-        The rules are as follows:
-            "cEXT": 0,  # 1 if Extraversion is exhibited, 0 if not
-            "cNEU": 0,  # 1 if Neuroticism is exhibited, 0 if not
-            "cAGR": 0,  # 1 if Agreeableness is exhibited, 0 if not
-            "cCON": 0,  # 1 if Conscientiousness is exhibited, 0 if not
-            "cOPN": 0   # 1 if Openness is exhibited, 0 if not
+    examples = actual.sample(n=example_count) if example_count > 0 else None
 
-        The output should be formated as follows:
-        {{
-            "cEXT": 0,
-            "cNEU": 0, 
-            "cAGR": 0, 
-            "cCON": 0, 
-            "cOPN": 0  
-        }}
+    for idx, essay in enumerate(essays):
+        prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
+        model_name = "gpt-3.5-turbo"
 
-        Analyze the essay:
-        {essay}
-        """
-
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "system", "content": "Analyze essays and indicate personality traits."},
-                      {"role": "user", "content": prompt}],
-            max_tokens=200
+        response = completion_with_backoff(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "Analyze essays and indicate personality traits."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=50
         )
         response_text = response['choices'][0]['message']['content'].strip()
         trait_scores = parse_json_to_dict(response_text)
@@ -62,12 +122,16 @@ def analyze_personality(essays: List[str]) -> List[Dict[str, int]]:
             miss_count += 1
         else:
             results.append(trait_scores)
+            successful_indices.append(idx)
+
+    # Filter the actual DataFrame to retain only rows corresponding to successful analyses
+    filtered_actual = actual.iloc[successful_indices]
 
     # Save results to a JSON file
-    with open('personality_analysis_results.json', 'w') as file:
+    with open(f'personality_analysis_results_{model_name}.json', 'w') as file:
         json.dump(results, file, indent=4)
 
-    return results, miss_count
+    return results, miss_count, filtered_actual
 
 def parse_json_to_dict(json_str):
     """
@@ -130,22 +194,44 @@ def calculate_metrics(actual: pd.DataFrame, predicted: List[Dict[str, int]]) -> 
 
     return {
         'Overall Accuracy': accuracy,
-        'Trait accuracy': trait_accuracy,
-        'Trait precision': trait_precision,
-        'Trait recall': trait_recall
+        'Trait accuracy': trait_accuracy.mean(),
+        'Trait precision': {k: v for k, v in trait_precision.items()},
+        'Trait recall': {k: v for k, v in trait_recall.items()}
     }
+
+def average_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
+    """
+    Calculate the average of metrics over multiple iterations.
+    """
+    average = {}
+    keys = metrics_list[0].keys()
+    for key in keys:
+        if isinstance(metrics_list[0][key], dict):
+            # If the value is a dictionary, average the values inside the dictionary
+            subkeys = metrics_list[0][key].keys()
+            average[key] = {}
+            for subkey in subkeys:
+                average[key][subkey] = sum(m[key][subkey] for m in metrics_list) / len(metrics_list)
+        else:
+            average[key] = sum(m[key] for m in metrics_list) / len(metrics_list)
+    return average
 
 # Path to your dataset file
 filepath = 'essays.csv'
 dataset = load_dataset(filepath)
-dataset = dataset.sample(frac=0.7, random_state=42)
-#dataset = dataset.head(20)
-# Process essays and predict traits
-predicted_traits, miss_count = analyze_personality(dataset['TEXT'].tolist())
-print(f"Missed {miss_count} essays")
-# Actual scores dataframe
-actual_scores = dataset[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']]
+dataset = dataset.sample(frac=0.15, random_state=42)
 
-# Calculate average accuracy and other metrics
-metrics = calculate_metrics(actual_scores, predicted_traits)
-print(f"Metrics: {metrics}")
+# Test the analysis for 10 times
+all_metrics = []
+example_count = 16  # Number of examples for few-shot learning, set to 0 for zero-shot learning
+
+for i in range(5):
+    print(f"Iteration {i+1}")
+    predicted_traits, miss_count, filtered_actual = analyze_personality(dataset[['TEXT', 'cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']], example_count=example_count)
+    print(f"Missed {miss_count} essays")
+    metrics = calculate_metrics(filtered_actual, predicted_traits)
+    all_metrics.append(metrics)
+    print(f"Iteration {i+1} Metrics: {metrics}")
+
+average_metrics_result = average_metrics(all_metrics)
+print(f"Conducting {example_count} shot test, Average Metrics: {average_metrics_result}")
