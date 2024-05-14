@@ -17,7 +17,7 @@ import wandb
 from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
 
 
-def seed_everything(seed=23):
+def seed_everything(seed=42):
 
     random.seed(seed)
     np.random.seed(seed)
@@ -224,8 +224,8 @@ def run_bert_sweep():
     sweep_config = {
         'method': 'random',  # 'grid', 'random', or 'bayes'
         'metric': {
-            'name': 'val_accuracy',
-            'goal': 'maximize'   
+            'name': 'val_loss',
+            'goal': 'minimize'   
         },
         'parameters': {
             'learning_rate': {
@@ -233,16 +233,22 @@ def run_bert_sweep():
                 'max': 1e-4
             },
             'batch_size': {
-                'values': [16, 32]
+                'values': [8, 16]
             },
             'epochs': {
-                'values': [1, 2]  # Shorter for quick sweeps
-            }
+                'values': [30, 50]  # Shorter for quick sweeps
+            },
+            'model_name': {
+                'values': ['prajjwal1/bert-small','google-bert/bert-base-uncased','distilbert/distilbert-base-uncased']
+            },
+            'max_length': {
+                'values': [128, 256, 512]
+            },
         }
     }
 
     sweep_id = wandb.sweep(sweep_config, project="nlp-personality-prediction")
-    wandb.agent(sweep_id, bert_sweep_setup, count=20)
+    wandb.agent(sweep_id, bert_sweep_setup, count=50)
 
 def bert_sweep_setup():
 
@@ -253,8 +259,8 @@ def bert_sweep_setup():
     raw_texts = data['TEXT'].tolist()
 
     # Model config
-    max_length = 512
-    model_name = 'prajjwal1/bert-small'
+    max_length = wandb.config.max_length
+    model_name = wandb.config.model_name
     trait_number = 5
     batch_size = wandb.config.batch_size  # Use wandb config
     epochs = wandb.config.epochs  # Use wandb config
