@@ -1,20 +1,18 @@
 import pandas as pd
-import openai
-from typing import List, Dict, Tuple
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import json
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-)  # for exponential backoff
+from typing import List, Dict, Tuple
+from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
+from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from tenacity import retry, stop_after_attempt, wait_random_exponential
+from huggingface_hub import login
 
-# Initialize the OpenAI client with your API key
-openai.api_key = 'sk-YourAPIKeyHere'
+login()
 
-@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
-def completion_with_backoff(**kwargs):
-    return openai.ChatCompletion.create(**kwargs)
+# Initialize the LLaMa 3 model and tokenizer
+model_name = "meta-llama/Meta-Llama-3-8B-Instruct"  # Replace with the correct LLaMa 3 model path
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(model_name)
+generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
 
 def load_dataset(filepath: str) -> pd.DataFrame:
     """
@@ -74,9 +72,23 @@ def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot:
     
     return prompt
 
+@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
+def completion_with_backoff(prompt: str) -> str:
+    """
+    Generate a completion with backoff retry for exponential backoff.
+
+    Parameters:
+    - prompt: The prompt to be sent to the model.
+
+    Returns:
+    - response_text: The model's response text.
+    """
+    response = generator(prompt, max_length=300, num_return_sequences=1)
+    return response[0]['generated_text']
+
 def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[List[Dict[str, int]], int, pd.DataFrame]:
     """
-    Sends essays to ChatGPT and retrieves predicted binary personality traits.
+    Sends essays to LLaMa 3 and retrieves predicted binary personality traits.
     If an analysis is missed, the corresponding row in `dataset` is dropped.
 
     Parameters:
@@ -98,17 +110,8 @@ def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[
 
     for idx, essay in enumerate(essays):
         prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
-        model_name = "gpt-3.5-turbo"
 
-        response = completion_with_backoff(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": "Analyze essays and indicate personality traits."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=50
-        )
-        response_text = response['choices'][0]['message']['content'].strip()
+        response_text = completion_with_backoff(prompt)
         trait_scores = parse_json_to_dict(response_text)
 
         if not trait_scores:
@@ -121,12 +124,12 @@ def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[
     filtered_actual = actual.iloc[successful_indices]
 
     # Save results to a JSON file
-    with open(f'personality_analysis_results_{model_name}.json', 'w') as file:
+    with open(f'personality_analysis_results_llama3.json', 'w') as file:
         json.dump(results, file, indent=4)
 
     return results, miss_count, filtered_actual
 
-def parse_json_to_dict(json_str):
+def parse_json_to_dict(json_str: str) -> Dict[str, int]:
     """
     Parses a JSON string and converts it into a Python dictionary.
 
@@ -137,8 +140,10 @@ def parse_json_to_dict(json_str):
         dict: A Python dictionary representing the JSON data.
     """
     try:
-        # Convert the JSON string to a Python dictionary
-        result_dict = json.loads(json_str)
+        # Extract the JSON part from the response text
+        json_part = json_str.split("{", 1)[1].rsplit("}", 1)[0]
+        json_part = "{" + json_part + "}"
+        result_dict = json.loads(json_part)
         return result_dict
     except json.JSONDecodeError as e:
         # Handle the case where the string is not valid JSON
@@ -220,7 +225,7 @@ filepath = 'essays.csv'
 dataset = load_dataset(filepath)
 dataset = dataset.sample(frac=0.15, random_state=42)
 
-# Test the analysis for 10 times
+# Test the analysis for 5 times
 all_metrics = []
 example_count = 1  # Number of examples for few-shot learning, set to 0 for zero-shot learning
 
@@ -230,9 +235,8 @@ for i in range(5):
     print(f"Missed {miss_count} essays")
     metrics = calculate_metrics(filtered_actual, predicted_traits)
     all_metrics.append(metrics)
-    #print(f"Iteration {i+1} Metrics: {metrics}")
 
 average_metrics_result = compute_average_metrics(all_metrics)
 print(f"Conducting {example_count} shot test, Average Metrics: \n")
 for item in average_metrics_result:
-    print(f"{item}: {average_metrics_result[item]}") 
+    print(f"{item}: {average_metrics_result[item]}")

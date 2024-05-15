@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, TensorDataset, random_split
+import torch.nn.functional as F
 from transformers import BertModel, BertTokenizer
 from sklearn.metrics import accuracy_score
 import wandb
@@ -28,8 +29,6 @@ def seed_everything(seed=42):
     torch.cuda.manual_seed_all(seed) 
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
 
 class Customized_LSTM(nn.Module):
     def __init__(self, embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers=1, bidirectional=False, dropout=0.1):
@@ -71,7 +70,11 @@ class Customized_LSTM(nn.Module):
         
         documents = documents.view(-1, sentence_length)
         embedded_sentences = self.embedding(documents)
-        embedded_sentences = embedded_sentences[:,:8]
+
+
+        # Normalize the embeddings
+        embedded_sentences = F.normalize(embedded_sentences, p=2, dim=2)
+        #embedded_sentences = embedded_sentences[:,:8]
         _, (sentence_hidden, _) = self.sentence_lstm(embedded_sentences)
         
         if self.sentence_lstm.bidirectional:
@@ -80,7 +83,7 @@ class Customized_LSTM(nn.Module):
             sentence_hidden = sentence_hidden[-1]
         
         sentence_hidden = sentence_hidden.view(batch_size, num_sentences, -1)
-        sentence_hidden = sentence_hidden[:,:12]
+        #sentence_hidden = sentence_hidden[:,:12]
         _, (document_hidden, _) = self.document_lstm(sentence_hidden)
         
         if self.document_lstm.bidirectional:
@@ -246,7 +249,7 @@ def train_bert():
     model.eval()
     total_test_correct = 0
     total_test = 0
-    total_test_correct_col = np.zeros(5)
+    total_test_correct_col = np.zeros(trait_number)
     with torch.no_grad():
         for batch in test_dataloader:
             batch = tuple(t.to(device) for t in batch)
@@ -267,7 +270,6 @@ def train_bert():
 
     print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
         
-
 def run_bert_sweep():
     sweep_config = {
         'method': 'random',  # 'grid', 'random', or 'bayes'
@@ -421,7 +423,7 @@ def run_lstm_sweep():
                 'values': [4, 8, 16, 32]
             },
             'epochs': {
-                'values': [30,50]  # Shorter for quick sweeps
+                'values': [30, 50]  # Shorter for quick sweeps
             },
             'sentence_hidden_dim': {
                 'values': [128, 256, 512]
@@ -520,7 +522,7 @@ def lstm_sweep_setup():
 
     wandb.finish()
 
-def train():
+def train_lstm():
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
 
     # Define the model
@@ -528,14 +530,15 @@ def train():
     document_hidden_dim = 512
     trait_num = 5
     num_layers = 1
-    batch_size = 16
-    learning_rate = 0.005
-    epochs = 20
+    batch_size = 32
+    learning_rate = 0.00005964911225837496
+    epochs = 50
 
     train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
     embedding_matrix = apply_word_embeddings(vocab)
 
-    model = Customized_LSTM(embedding_matrix, sentence_hidden_dim=128, document_hidden_dim=128, output_dim=trait_num, num_layers=2, bidirectional=True, dropout=0.1)
+    model = Customized_LSTM(embedding_matrix, sentence_hidden_dim=sentence_hidden_dim, document_hidden_dim=document_hidden_dim, output_dim=trait_num, num_layers=num_layers, bidirectional=True, dropout=0.1)
+    model_save_path = "best_model_lstm_loss.pth"
     model.to(device)
 
     # Create DataLoaders
@@ -543,8 +546,7 @@ def train():
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=10, verbose=True)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
 
     wandb_on = False
@@ -563,6 +565,9 @@ def train():
             },
             notes="None",
             )
+        
+    best_val_loss = float('inf')
+    best_val_acc = 0.0
     # Assume the model and other components are set up as before
     for epoch in range(epochs):
         # Training Phase
@@ -578,6 +583,7 @@ def train():
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+            
         
         train_loss_epoch_avg = total_loss / len(train_loader)
         print(f"Epoch {epoch + 1}, Training Loss: {train_loss_epoch_avg}")
@@ -588,6 +594,7 @@ def train():
         total_eval = 0
         total_eval_loss = 0
         total_eval_correct_col = np.zeros(trait_num)
+
         with torch.no_grad():
             for inputs, targets in val_loader:
                 inputs = inputs.to(device)
@@ -602,30 +609,44 @@ def train():
                 total_eval_correct += correct.sum()
                 total_eval_correct_col += correct.sum(axis=0)
                 total_eval += correct.size
-            
+                
             avg_val_accuracy = total_eval_correct / total_eval
             avg_val_accuracy_col = total_eval_correct_col / (total_eval/trait_num)
             avg_val_loss = total_eval_loss / len(val_loader)
 
         print(f"Epoch {epoch + 1}, Validation Loss: {avg_val_loss}, Validation Accuracy: {avg_val_accuracy}, Validation Accuracy per trait: {avg_val_accuracy_col}")
         #if wandb_on: wandb.log({"epoch": epoch, "train loss": train_loss_epoch_avg, "val loss": avg_val_loss})
+        # Check if this is the best model based on validation accuracy
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            # Save the model
+            torch.save(model.state_dict(), model_save_path)
+            print(f"New best model saved with validation loss: {avg_val_loss}, and accuracy {avg_val_accuracy}")
 
-    if False:
-        # Testing Phase
-        model.eval()
-        y_pred = []
-        y_true = []
-        with torch.no_grad():
-            for texts, labels in test_loader:
-                predictions = model(texts)
-                predictions = torch.sigmoid(predictions).round()  # Convert to binary predictions
-                y_pred.extend(predictions.numpy())
-                y_true.extend(labels.numpy())
+    # Test phase
+    model.load_state_dict(torch.load(model_save_path, map_location=device))
+    model.to(device)
+    model.eval()
+    total_test_correct = 0
+    total_test = 0
+    total_test_correct_col = np.zeros(trait_num)
+    with torch.no_grad():
+        for batch in test_loader:
+            batch = tuple(t.to(device) for t in batch)
+            texts, labels = batch
+            
+            outputs = model(texts)
+            outputs = outputs.squeeze()
 
-        # Calculate accuracy for each trait
-        y_pred = np.array(y_pred)
-        y_true = np.array(y_true)
-        trait_names = ['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']
-        for i, trait in enumerate(trait_names):
-            trait_accuracy = accuracy_score(y_true[:, i], y_pred[:, i])
-            print(f'Accuracy for {trait}: {trait_accuracy:.4f}')
+            # Convert probabilities to predicted classes based on threshold
+            preds = (outputs >= 0.5).long() 
+            correct = (preds == labels).cpu().numpy()
+            total_test_correct += correct.sum()
+            total_test_correct_col += correct.sum(axis=0)
+            total_test += correct.size
+    
+    avg_test_accuracy = total_test_correct / total_test
+    avg_test_accuracy_col = total_test_correct_col / (total_test/trait_num)
+
+    print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
+
