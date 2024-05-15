@@ -41,15 +41,8 @@ def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot:
     - prompt: A formatted string to be used as the prompt for the model.
     """
     prompt = """
-    Analyze the following text and determine if the author exhibits the following traits:
-    - Extraversion (cEXT)
-    - Neuroticism (cNEU)
-    - Agreeableness (cAGR)
-    - Conscientiousness (cCON)
-    - Openness (cOPN)
+    Analyze the following text and determine if the author exhibits the following traits: Extraversion (cEXT), Neuroticism (cNEU), Agreeableness (cAGR), Conscientiousness (cCON), Openness (cOPN). Please provide results in JSON format without further explanation and without indicating it is a JSON file.
 
-    Please provide results in JSON format without further explanation and without indicating it is a JSON file.
-    
     The rules are as follows:
         "cEXT": 0,  # 1 if Extraversion is exhibited, 0 if not
         "cNEU": 0,  # 1 if Neuroticism is exhibited, 0 if not
@@ -61,8 +54,8 @@ def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot:
     if not zero_shot:
         for _, row in examples.iterrows():
             prompt += f"""
-            Example:
-            Analyze the essay:
+            Here is an example:
+            Analyze the essay
             "{row['TEXT']}"
 
             {{
@@ -194,27 +187,33 @@ def calculate_metrics(actual: pd.DataFrame, predicted: List[Dict[str, int]]) -> 
 
     return {
         'Overall Accuracy': accuracy,
-        'Trait accuracy': trait_accuracy.mean(),
+        'Trait accuracy': trait_accuracy,
         'Trait precision': {k: v for k, v in trait_precision.items()},
         'Trait recall': {k: v for k, v in trait_recall.items()}
     }
 
-def average_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
-    """
-    Calculate the average of metrics over multiple iterations.
-    """
-    average = {}
-    keys = metrics_list[0].keys()
-    for key in keys:
-        if isinstance(metrics_list[0][key], dict):
-            # If the value is a dictionary, average the values inside the dictionary
-            subkeys = metrics_list[0][key].keys()
-            average[key] = {}
-            for subkey in subkeys:
-                average[key][subkey] = sum(m[key][subkey] for m in metrics_list) / len(metrics_list)
-        else:
-            average[key] = sum(m[key] for m in metrics_list) / len(metrics_list)
-    return average
+def compute_average_metrics(metrics_list):
+    # Convert overall accuracy to a DataFrame and compute the mean
+    overall_accuracies = pd.DataFrame([metrics['Overall Accuracy'] for metrics in metrics_list])
+    average_overall_accuracy = overall_accuracies.mean()[0]
+
+    # Convert trait accuracies, precisions, and recalls to DataFrames and compute the mean
+    trait_accuracies = pd.DataFrame([metrics['Trait accuracy'] for metrics in metrics_list])
+    average_trait_accuracy = trait_accuracies.mean()
+
+    trait_precisions = pd.DataFrame([metrics['Trait precision'] for metrics in metrics_list])
+    average_trait_precision = trait_precisions.mean()
+
+    trait_recalls = pd.DataFrame([metrics['Trait recall'] for metrics in metrics_list])
+    average_trait_recall = trait_recalls.mean()
+
+    # Return the averages as a dictionary
+    return {
+        "Average Overall Accuracy": average_overall_accuracy,
+        "Average Trait Accuracy": [item for item in average_trait_accuracy],
+        "Average Trait Precision": [item for item in average_trait_precision],
+        "Average Trait Recall": [item for item in average_trait_recall]
+    }
 
 # Path to your dataset file
 filepath = 'essays.csv'
@@ -223,7 +222,7 @@ dataset = dataset.sample(frac=0.15, random_state=42)
 
 # Test the analysis for 10 times
 all_metrics = []
-example_count = 16  # Number of examples for few-shot learning, set to 0 for zero-shot learning
+example_count = 1  # Number of examples for few-shot learning, set to 0 for zero-shot learning
 
 for i in range(5):
     print(f"Iteration {i+1}")
@@ -231,7 +230,9 @@ for i in range(5):
     print(f"Missed {miss_count} essays")
     metrics = calculate_metrics(filtered_actual, predicted_traits)
     all_metrics.append(metrics)
-    print(f"Iteration {i+1} Metrics: {metrics}")
+    #print(f"Iteration {i+1} Metrics: {metrics}")
 
-average_metrics_result = average_metrics(all_metrics)
-print(f"Conducting {example_count} shot test, Average Metrics: {average_metrics_result}")
+average_metrics_result = compute_average_metrics(all_metrics)
+print(f"Conducting {example_count} shot test, Average Metrics: \n")
+for item in average_metrics_result:
+    print(f"{item}: {average_metrics_result[item]}") 
