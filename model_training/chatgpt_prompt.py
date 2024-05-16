@@ -4,6 +4,7 @@ import re
 from typing import List, Dict, Tuple
 import json
 from tenacity import retry, stop_after_attempt, wait_random_exponential
+import tiktoken
 
 # Retry logic for API calls
 @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
@@ -109,9 +110,8 @@ def analyze_personality(dataset: pd.DataFrame, model_name: str, example_count: i
     successful_indices = []
 
     examples = actual.sample(n=example_count) if example_count > 0 else None
-    count = 0
+
     for idx, essay in enumerate(essays):
-        print(f"Now Processing {count}")
         prompt = {}
         while not prompt:
             prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
@@ -132,8 +132,6 @@ def analyze_personality(dataset: pd.DataFrame, model_name: str, example_count: i
         else:
             results.append(trait_scores)
             successful_indices.append(idx)
-        
-        count +=1
 
     # Filter the actual DataFrame to retain only rows corresponding to successful analyses
     filtered_actual = actual.iloc[successful_indices]
@@ -282,15 +280,15 @@ def test_chatgpt(fraction, example_count, iterations,api_key):
 
     model_name = "gpt-3.5-turbo"
     for i in range(iterations):
-        print(f"Iteration {i+1}")
+        #print(f"Iteration {i+1}")
         predicted_traits, miss_count, filtered_actual = analyze_personality(dataset[['TEXT', 'cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']], 
                                                                             model_name=model_name, example_count=example_count)
-        print(f"Missed {miss_count} essays")
+        #print(f"Missed {miss_count} essays")
         metrics = calculate_metrics(filtered_actual, predicted_traits)
         all_metrics.append(metrics)
 
     average_metrics_result = compute_average_metrics(all_metrics)
-    print(f"### Conducting model {model_name} {example_count}-shot test, Average Metrics:")
+    print(f"### Conducting model {model_name} {example_count}-shot test with {iterations} iterations, Average Metrics:")
     for item in average_metrics_result:
         print(f"{item}: {average_metrics_result[item]}")
 

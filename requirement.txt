@@ -1,9 +1,0 @@
---extra-index-url https://download.pytorch.org/whl/cu121
-torch
-torchvision
-torchaudio
-
-torchtext=0.18.0
-wordcloud
-gensim
-openai==0.28.0

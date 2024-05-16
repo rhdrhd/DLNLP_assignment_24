@@ -11,8 +11,14 @@ import wandb
 
 from data_preprocess.preprocess import prepare_data_for_bert
 
+import warnings
+
+# Suppress specific warning
+warnings.filterwarnings("ignore", category=FutureWarning, message=".*resume_download.*")
+
 # Function to set seed for reproducibility
 def seed_everything(seed=42):
+
     random.seed(seed)
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -21,6 +27,7 @@ def seed_everything(seed=42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
 # Define the BERT-based classifier model
 class BERTClassifier(nn.Module):
@@ -39,13 +46,14 @@ class BERTClassifier(nn.Module):
         return preds
 
 # Function to train the BERT model
-def train_bert():
+def train_bert(epoch=50):
+    seed_everything(42)
     # Model config
     max_length = 512
     model_name = 'prajjwal1/bert-small'
     trait_number = 5
     batch_size = 8
-    epochs = 50
+    epochs = epoch
 
     # Prepare data for BERT
     train_dataset, val_dataset, test_dataset = prepare_data_for_bert(model_name, max_length, trait_number)
@@ -56,7 +64,6 @@ def train_bert():
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("device: ", device)
 
     # Load BERT model
     bert_model = BertModel.from_pretrained(model_name)
@@ -87,9 +94,10 @@ def train_bert():
 
     # Initialize best validation loss
     best_val_loss = float('inf')
+    best_val_acc = 0.0
     # Define model saving path
-    model_save_path = 'best_model.pth'
-
+    model_save_path_loss = "model_weights/best_model_bert_loss.pth"
+    model_save_path_acc = "model_weights/best_model_bert_acc.pth"
     # Training loop
     for epoch in range(epochs):
         model.train()
@@ -151,7 +159,13 @@ def train_bert():
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             # Save the model
-            torch.save(model.state_dict(), model_save_path)
+            torch.save(model.state_dict(), model_save_path_loss)
+            print(f"New best model saved with validation loss: {best_val_loss}, and accuracy {avg_val_accuracy}")
+
+        if avg_val_accuracy > best_val_acc:
+            best_val_acc = avg_val_accuracy
+            # Save the model
+            torch.save(model.state_dict(), model_save_path_acc)
             print(f"New best model saved with validation loss: {best_val_loss}, and accuracy {avg_val_accuracy}")
 
 # Function to run a hyperparameter sweep with Weights & Biases
@@ -293,6 +307,7 @@ def bert_sweep_setup():
 
 # Function to test the trained BERT model
 def test_bert(model_save_path):
+    seed_everything(42)
     # Load dataset
     # Model config
     max_length = 512
@@ -304,10 +319,9 @@ def test_bert(model_save_path):
     _, _, test_dataset = prepare_data_for_bert(model_name, max_length, trait_number)
 
     # Create dataloaders
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, drop_last=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("device: ", device)
 
     # Load BERT model
     bert_model = BertModel.from_pretrained(model_name)
@@ -336,5 +350,5 @@ def test_bert(model_save_path):
     
     avg_test_accuracy = total_test_correct / total_test
     avg_test_accuracy_col = total_test_correct_col / (total_test / trait_number)
-    print(f"### Conducting BERT model {model_name} testing:")
+    print(f"### Conducting BERT model {model_name} testing, with path {model_save_path}:")
     print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")

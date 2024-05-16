@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 from gensim.models import KeyedVectors
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, random_split, TensorDataset
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BertTokenizer
 from wordcloud import WordCloud
@@ -183,7 +183,7 @@ class EssaysDataset(Dataset):
         return len(self.documents)
     
     def __getitem__(self, idx):
-        return torch.tensor(self.documents[idx], dtype=torch.long), torch.tensor(self.labels[idx], dtype=torch.float32)
+        return self.documents[idx], self.labels[idx]
 
 # Function to preprocess data
 def preprocess_data(target_sentence_num=12, max_words=20):
@@ -220,7 +220,13 @@ def preprocess_data(target_sentence_num=12, max_words=20):
 
     # Initialize Labels
     labels = data[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']].replace({'y': 1, 'n': 0}).values
-    labels_tensor = torch.tensor(labels, dtype=torch.float32)
+
+    # Ensure all values are numeric
+    labels_numeric = labels.astype(np.float32)
+
+    # Convert the NumPy array to a PyTorch tensor
+    labels_tensor = torch.tensor(labels_numeric, dtype=torch.float32)
+
  
     # Initialize the dataset
     full_dataset = EssaysDataset(numericalized_texts, labels_tensor)

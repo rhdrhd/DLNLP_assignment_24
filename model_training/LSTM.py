@@ -18,12 +18,12 @@ def seed_everything(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
-    
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed) 
+    torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
 class Customized_LSTM(nn.Module):
     def __init__(self, embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers=1, bidirectional=False, dropout=0.1):
@@ -208,7 +208,9 @@ def lstm_sweep_setup():
 
     wandb.finish()
 
-def train_lstm():
+def train_lstm(epoch=50):
+    seed_everything(42)
+    
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
 
     # Define the model
@@ -218,19 +220,19 @@ def train_lstm():
     num_layers = 1
     batch_size = 32
     learning_rate = 0.00005964911225837496
-    epochs = 50
+    epochs = epoch
 
     train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
     embedding_matrix = apply_word_embeddings(vocab)
 
     model = Customized_LSTM(embedding_matrix, sentence_hidden_dim=sentence_hidden_dim, document_hidden_dim=document_hidden_dim, output_dim=trait_num, num_layers=num_layers, bidirectional=True, dropout=0.1)
-    model_save_path = "best_model_lstm_loss.pth"
+    model_save_path_loss = "model_weights/best_model_lstm_loss.pth"
+    model_save_path_acc = "model_weights/best_model_lstm_acc.pth"
     model.to(device)
 
     # Create DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.BCEWithLogitsLoss()
@@ -306,49 +308,26 @@ def train_lstm():
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             # Save the model
-            torch.save(model.state_dict(), model_save_path)
-            print(f"New best model saved with validation loss: {avg_val_loss}, and accuracy {avg_val_accuracy}")
+            torch.save(model.state_dict(), model_save_path_loss)
+            print(f"New best model with min loss saved with validation loss: {avg_val_loss}, and accuracy {avg_val_accuracy}")
+        if avg_val_accuracy > best_val_acc:
+            best_val_acc = avg_val_accuracy
+            torch.save(model.state_dict(), model_save_path_acc)
+            print(f"New best model with max acc saved with validation loss: {avg_val_loss}, and accuracy {avg_val_accuracy}")
 
-    # Test phase
-    model.load_state_dict(torch.load(model_save_path, map_location=device))
-    model.to(device)
-    model.eval()
-    total_test_correct = 0
-    total_test = 0
-    total_test_correct_col = np.zeros(trait_num)
-    with torch.no_grad():
-        for batch in test_loader:
-            batch = tuple(t.to(device) for t in batch)
-            texts, labels = batch
-            
-            outputs = model(texts)
-            outputs = outputs.squeeze()
 
-            # Convert probabilities to predicted classes based on threshold
-            preds = (outputs >= 0.5).long() 
-            correct = (preds == labels).cpu().numpy()
-            total_test_correct += correct.sum()
-            total_test_correct_col += correct.sum(axis=0)
-            total_test += correct.size
-    
-    avg_test_accuracy = total_test_correct / total_test
-    avg_test_accuracy_col = total_test_correct_col / (total_test/trait_num)
-
-    print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
 
 def test_lstm(model_save_path):
     device = torch.device('cuda' if torch.cuda.is_available() else "cpu")
-
+    seed_everything(42)
     # Define the model
     sentence_hidden_dim = 256
     document_hidden_dim = 512
     trait_num = 5
     num_layers = 1
     batch_size = 32
-    learning_rate = 0.00005964911225837496
-    epochs = 50
 
-    train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
+    _,  _, test_dataset, vocab = preprocess_data()
     embedding_matrix = apply_word_embeddings(vocab)
 
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
@@ -378,6 +357,6 @@ def test_lstm(model_save_path):
     avg_test_accuracy = total_test_correct / total_test
     avg_test_accuracy_col = total_test_correct_col / (total_test/trait_num)
 
-    print("### Conducting LSTM model test: ")
+    print(f"### Conducting LSTM model test (with path {model_save_path}): ")
     print(f"Test Accuracy: {avg_test_accuracy}, Test Accuracy per trait: {avg_test_accuracy_col}")
 

@@ -1,4 +1,4 @@
-name: nlp-final
+name: nlp-project
 
 dependencies:
   - python=3.8
