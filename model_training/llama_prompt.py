@@ -2,17 +2,13 @@ import pandas as pd
 import json
 from typing import List, Dict, Tuple
 from transformers import pipeline, AutoModelForCausalLM, AutoTokenizer
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-from tenacity import retry, stop_after_attempt, wait_random_exponential
-from huggingface_hub import login
 
-login()
 
 # Initialize the LLaMa 3 model and tokenizer
 model_name = "meta-llama/Meta-Llama-3-8B-Instruct"  # Replace with the correct LLaMa 3 model path
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForCausalLM.from_pretrained(model_name)
-generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
+generator = pipeline("text-generation", model=model, tokenizer=tokenizer, truncation=True)
 
 def load_dataset(filepath: str) -> pd.DataFrame:
     """
@@ -72,10 +68,9 @@ def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot:
     
     return prompt
 
-@retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
-def completion_with_backoff(prompt: str) -> str:
+def completion(prompt: str) -> str:
     """
-    Generate a completion with backoff retry for exponential backoff.
+    Generate a completion without backoff retry.
 
     Parameters:
     - prompt: The prompt to be sent to the model.
@@ -83,7 +78,7 @@ def completion_with_backoff(prompt: str) -> str:
     Returns:
     - response_text: The model's response text.
     """
-    response = generator(prompt, max_length=300, num_return_sequences=1)
+    response = generator(prompt, max_new_tokens=200, num_return_sequences=1)
     return response[0]['generated_text']
 
 def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[List[Dict[str, int]], int, pd.DataFrame]:
@@ -111,7 +106,7 @@ def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[
     for idx, essay in enumerate(essays):
         prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
 
-        response_text = completion_with_backoff(prompt)
+        response_text = completion(prompt)
         trait_scores = parse_json_to_dict(response_text)
 
         if not trait_scores:

@@ -1,17 +1,21 @@
+import re
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import torch
+from gensim.models import KeyedVectors
+from torch.utils.data import Dataset, DataLoader, random_split
+from torch.nn.utils.rnn import pad_sequence
+from transformers import BertTokenizer
+from wordcloud import WordCloud
 import torchtext
+# Disable torchtext deprecation warning
 torchtext.disable_torchtext_deprecation_warning()
 from torchtext.data.utils import get_tokenizer
 from torchtext.vocab import build_vocab_from_iterator
-from torch.nn.utils.rnn import pad_sequence
-from wordcloud import WordCloud
-from gensim.models import KeyedVectors
-from torch.utils.data import Dataset, random_split
-from transformers import BertTokenizer
-import matplotlib.pyplot as plt
-import re
-import numpy as np
+
+
+
 
 # Define a dictionary of contractions and their expanded forms
 contractions_dict = {
@@ -40,7 +44,6 @@ contractions_dict = {
     "shouldn't": "should not",
     "mightn't": "might not",
     "mustn't": "must not"
-
 }
 
 # Function to replace contractions in a string with all lowercase letters
@@ -53,6 +56,7 @@ def expand_contractions(text, contractions_dict):
     
     return contractions_re.sub(replace, text)
 
+# Function to split text into sentences, forcing a max number of words per sentence
 def split_text_into_sentence_force(text, max_words=20):
     # Remove all characters that are not alphanumeric or spaces
     cleaned_text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
@@ -77,6 +81,7 @@ def split_text_into_sentence_force(text, max_words=20):
     
     return processed_sentences
 
+# Function to split text into sentences
 def split_text_into_sentence(text):
     # Split using period followed by whitespace or end of text to denote sentence boundaries
     sentences = re.split(r'\.\s+|\.$', text)
@@ -104,6 +109,7 @@ def split_text_into_sentence(text):
     
     return processed_sentences
 
+# Function to normalize sentences
 def normalize_sentences(doc):
     # Ensure every sentence is a string
     normalized_sentences = []
@@ -120,9 +126,7 @@ def normalize_sentences(doc):
         normalized_sentences.append(normalized_sentence)
     return normalized_sentences
 
-
-
-#pre-padding
+# Function to convert tokens to indices with pre-padding
 def convert_tokens_to_indices(documents, vocab):
     max_sentences = max(len(doc) for doc in documents)
     max_len = max(len(sentence) for doc in documents for sentence in doc)
@@ -143,6 +147,7 @@ def convert_tokens_to_indices(documents, vocab):
     indexed_documents_tensor = torch.tensor(indexed_documents)
     return indexed_documents_tensor
 
+# Function to apply word embeddings
 def apply_word_embeddings(vocab):
     # Load the pre-trained Word2Vec model
     word2vec = KeyedVectors.load_word2vec_format('data_preprocess/GoogleNews-vectors-negative300.bin', binary=True)
@@ -162,11 +167,13 @@ def apply_word_embeddings(vocab):
     embedding_matrix = torch.tensor(embedding_matrix, dtype=torch.float32)
     return embedding_matrix
 
+# Generator function to yield tokens from data
 def yield_tokens(data):
     for document in data:
         for sentence in document:
             yield sentence
 
+# Custom Dataset class for Essays
 class EssaysDataset(Dataset):
     def __init__(self, documents, labels):
         self.documents = documents
@@ -178,19 +185,20 @@ class EssaysDataset(Dataset):
     def __getitem__(self, idx):
         return torch.tensor(self.documents[idx], dtype=torch.long), torch.tensor(self.labels[idx], dtype=torch.float32)
 
+# Function to preprocess data
 def preprocess_data(target_sentence_num=12, max_words=20):
     # Load dataset
-    data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')  #Ensure the correct encoding is specified
+    data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')  # Ensure the correct encoding is specified
 
     # Clean the text
     data['TEXT'] = data['TEXT'].str.lower().apply(lambda x: expand_contractions(x, contractions_dict))
-    data['TEXT'] = data['TEXT'].str.replace(r'[^a-zA-Z0-9\s\.]', '',regex=True)
-    #print(data['TEXT'][0])
-    data['PROCESSED_TEXT']= data['TEXT'].apply(lambda x: split_text_into_sentence_force(x, max_words))
+    data['TEXT'] = data['TEXT'].str.replace(r'[^a-zA-Z0-9\s\.]', '', regex=True)
+    
+    # Split text into sentences with a maximum number of words
+    data['PROCESSED_TEXT'] = data['TEXT'].apply(lambda x: split_text_into_sentence_force(x, max_words))
 
-    #median_sentences = int(np.median([len(doc) for doc in data['PROCESSED_TEXT']]))
     target_sentence_num = target_sentence_num
-    # Adjust each document to have the median number of sentences
+    # Adjust each document to have the target number of sentences
     data['PROCESSED_TEXT'] = data['PROCESSED_TEXT'].apply(
         lambda doc: [['<pad>']] * (target_sentence_num - len(doc)) + doc if len(doc) < target_sentence_num else doc[:target_sentence_num]
     )
@@ -200,7 +208,7 @@ def preprocess_data(target_sentence_num=12, max_words=20):
     
     # Tokenization
     tokenizer = get_tokenizer('basic_english')
-    tokenized_texts = [[tokenizer(sentence) for sentence in doc]for doc in data['PROCESSED_TEXT']]
+    tokenized_texts = [[tokenizer(sentence) for sentence in doc] for doc in data['PROCESSED_TEXT']]
     data['TOKENIZED_TEXT'] = tokenized_texts
 
     # Build vocabulary
@@ -212,7 +220,6 @@ def preprocess_data(target_sentence_num=12, max_words=20):
 
     # Initialize Labels
     labels = data[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']].replace({'y': 1, 'n': 0}).values
-    #labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
     labels_tensor = torch.tensor(labels, dtype=torch.float32)
  
     # Initialize the dataset
@@ -226,14 +233,28 @@ def preprocess_data(target_sentence_num=12, max_words=20):
     # Split the dataset
     train_dataset, val_dataset, test_dataset = random_split(full_dataset, [train_size, val_size, test_size])
 
-    return train_dataset,  val_dataset, test_dataset, vocab
+    return train_dataset, val_dataset, test_dataset, vocab
 
-def prepare_data_for_bert(model, texts, max_length):
+# Function to prepare data for BERT
+def prepare_data_for_bert(model, max_length, trait_number=5):
+    # Load dataset
+    data = pd.read_csv('data_preprocess/essays.csv', encoding='mac_roman')
+    texts = data['TEXT'].tolist()
+
+    # Initialize labels
+    if trait_number == 1:
+        labels = data[['cEXT']].replace({'y': 1, 'n': 0}).values
+        labels = torch.tensor(labels.tolist(), dtype=torch.float32).squeeze()
+    else:
+        labels = data[['cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']].replace({'y': 1, 'n': 0}).values
+        labels = torch.tensor(labels.tolist(), dtype=torch.float32)
+    
     tokenizer = BertTokenizer.from_pretrained(model)
 
     input_ids = []
     attention_masks = []
     
+    # Tokenize the texts
     for text in texts:
         encoded_dict = tokenizer.encode_plus(
             text,                      # Text to encode
@@ -265,8 +286,20 @@ def prepare_data_for_bert(model, texts, max_length):
     input_ids = torch.stack(input_ids)
     attention_masks = torch.stack(attention_masks)
 
-    return input_ids, attention_masks
+    # Create TensorDataset
+    dataset = TensorDataset(input_ids, attention_masks, labels)
 
+    # Split dataset into train, validation, and test sets
+    total_size = len(dataset)
+    train_size = int(0.7 * total_size)
+    val_size = int(0.15 * total_size)
+    test_size = total_size - train_size - val_size
+
+    train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
+
+    return train_dataset, val_dataset, test_dataset
+
+# Function to plot a word cloud
 def plot_wordcloud(text):
     # Flatten the list of lists into a single string
     words = ' '.join([' '.join(sublist) for sublist in text])
@@ -278,7 +311,3 @@ def plot_wordcloud(text):
     plt.imshow(wordcloud, interpolation='bilinear')
     plt.axis('off')  # Turn off axis numbers and ticks
     plt.savefig('Images/wordcloud.png')
-
-#train_dataset,  val_dataset, test_dataset, vocab = preprocess_data()
-#print(len(train_dataset), len(val_dataset), len(test_dataset), len(vocab))
-#preprocess_data()

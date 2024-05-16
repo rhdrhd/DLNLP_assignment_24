@@ -1,17 +1,10 @@
 import pandas as pd
 import openai
 from typing import List, Dict, Tuple
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import json
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-)  # for exponential backoff
+from tenacity import retry, stop_after_attempt, wait_random_exponential
 
-# Initialize the OpenAI client with your API key
-openai.api_key = 'sk-proj-EwRsyEt1chy2ZSdlumsRT3BlbkFJqgPaeKVzUDyOawgAUFKH'
-
+# Retry logic for API calls
 @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(10))
 def completion_with_backoff(**kwargs):
     return openai.ChatCompletion.create(**kwargs)
@@ -19,6 +12,12 @@ def completion_with_backoff(**kwargs):
 def load_dataset(filepath: str) -> pd.DataFrame:
     """
     Load the essays dataset with binary Big Five personality trait scores.
+
+    Parameters:
+    - filepath: Path to the CSV file containing the dataset.
+
+    Returns:
+    - DataFrame with the dataset.
     """
     try:
         df = pd.read_csv(filepath, encoding='mac_roman')
@@ -69,7 +68,7 @@ def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot:
     
     return prompt
 
-def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[List[Dict[str, int]], int, pd.DataFrame]:
+def analyze_personality(dataset: pd.DataFrame, model_name: str, example_count: int = 0) -> Tuple[List[Dict[str, int]], int, pd.DataFrame]:
     """
     Sends essays to ChatGPT and retrieves predicted binary personality traits.
     If an analysis is missed, the corresponding row in `dataset` is dropped.
@@ -93,7 +92,6 @@ def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[
 
     for idx, essay in enumerate(essays):
         prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
-        model_name = "gpt-3.5-turbo"
 
         response = completion_with_backoff(
             model=model_name,
@@ -144,6 +142,13 @@ def parse_json_to_dict(json_str):
 def calculate_metrics(actual: pd.DataFrame, predicted: List[Dict[str, int]]) -> Dict[str, float]:
     """
     Calculates accuracy, precision, recall, and F1-score for binary trait predictions.
+
+    Parameters:
+    - actual: DataFrame with actual binary trait scores.
+    - predicted: List of dictionaries with predicted binary trait scores.
+
+    Returns:
+    - Dictionary with calculated metrics.
     """
     actual_scores = actual[["cEXT", "cNEU", "cAGR", "cCON", "cOPN"]].replace({'y': 1, 'n': 0})
     predicted_scores = pd.DataFrame(predicted)
@@ -188,6 +193,15 @@ def calculate_metrics(actual: pd.DataFrame, predicted: List[Dict[str, int]]) -> 
     }
 
 def compute_average_metrics(metrics_list):
+    """
+    Computes average metrics from a list of metric dictionaries.
+
+    Parameters:
+    - metrics_list: List of dictionaries with metrics from multiple runs.
+
+    Returns:
+    - Dictionary with averaged metrics.
+    """
     # Convert overall accuracy to a DataFrame and compute the mean
     overall_accuracies = pd.DataFrame([metrics['Overall Accuracy'] for metrics in metrics_list])
     average_overall_accuracy = overall_accuracies.mean()[0]
@@ -205,30 +219,46 @@ def compute_average_metrics(metrics_list):
     # Return the averages as a dictionary
     return {
         "Average Overall Accuracy": average_overall_accuracy,
-        "Average Trait Accuracy": [item for item in average_trait_accuracy],
-        "Average Trait Precision": [item for item in average_trait_precision],
-        "Average Trait Recall": [item for item in average_trait_recall]
+        "Average Trait Accuracy": average_trait_accuracy.to_dict(),
+        "Average Trait Precision": average_trait_precision.to_dict(),
+        "Average Trait Recall": average_trait_recall.to_dict()
     }
 
-# Path to your dataset file
-#filepath = 'data_preprocess/essays.csv'
-filepath = 'essays.csv'
-dataset = load_dataset(filepath)
-dataset = dataset.sample(frac=0.15, random_state=42)
+def test_chatgpt(fraction, example_count, iterations,api_key):
+    """
+    Main function to test ChatGPT for personality trait analysis on a dataset.
 
-# Test the analysis for 10 times
-all_metrics = []
-example_count = 16  # Number of examples for few-shot learning, set to 0 for zero-shot learning
+    Parameters:
+    - fraction: Fraction of the dataset to use for testing.
+    - example_count: Number of examples for few-shot learning (0 for zero-shot).
 
-for i in range(3):
-    print(f"Iteration {i+1}")
-    predicted_traits, miss_count, filtered_actual = analyze_personality(dataset[['TEXT', 'cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']], example_count=example_count)
-    print(f"Missed {miss_count} essays")
-    metrics = calculate_metrics(filtered_actual, predicted_traits)
-    all_metrics.append(metrics)
-    #print(f"Iteration {i+1} Metrics: {metrics}")
+    Returns:
+    - Prints the average metrics over multiple runs.
+    """
+    # Initialize the OpenAI client with your API key
+    openai.api_key = api_key
 
-average_metrics_result = compute_average_metrics(all_metrics)
-print(f"Conducting {example_count} shot test, Average Metrics: \n")
-for item in average_metrics_result:
-    print(f"{item}: {average_metrics_result[item]}") 
+
+    filepath = 'data_preprocess/essays.csv'
+    dataset = load_dataset(filepath)
+    dataset = dataset.sample(frac=fraction, random_state=42)
+
+    # Test the analysis for 10 times
+    all_metrics = []
+    example_count = example_count  # Number of examples for few-shot learning, set to 0 for zero-shot learning
+
+    model_name = "gpt-3.5-turbo"
+    for i in range(iterations):
+        print(f"Iteration {i+1}")
+        predicted_traits, miss_count, filtered_actual = analyze_personality(dataset[['TEXT', 'cEXT', 'cNEU', 'cAGR', 'cCON', 'cOPN']], 
+                                                                            model_name=model_name, example_count=example_count)
+        print(f"Missed {miss_count} essays")
+        metrics = calculate_metrics(filtered_actual, predicted_traits)
+        all_metrics.append(metrics)
+
+    average_metrics_result = compute_average_metrics(all_metrics)
+    print(f"### Conducting model {model_name} {example_count}-shot test, Average Metrics:")
+    for item in average_metrics_result:
+        print(f"{item}: {average_metrics_result[item]}")
+
+
