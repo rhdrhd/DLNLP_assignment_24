@@ -6,7 +6,6 @@ from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_sc
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 from huggingface_hub import login
 
-login()
 
 # Initialize the LLaMa 3 model and tokenizer
 model_name = "meta-llama/Meta-Llama-3-8B-Instruct"  # Replace with the correct LLaMa 3 model path

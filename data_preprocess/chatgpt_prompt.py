@@ -1,8 +1,10 @@
 import pandas as pd
 import openai
+import re
 from typing import List, Dict, Tuple
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import json
+import tiktoken
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -28,46 +30,65 @@ def load_dataset(filepath: str) -> pd.DataFrame:
     except Exception as e:
         raise ValueError(f"Error loading dataset: {e}")
 
-def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot: bool = False) -> str:
+def count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
     """
-    Create a few-shot learning prompt with multiple examples or a zero-shot prompt.
+    Count the number of tokens in the given text for the specified model.
+    """
+    encoding = tiktoken.encoding_for_model(model)
+    tokens = encoding.encode(text)
+    return len(tokens)
+
+def create_few_shot_prompt(examples: pd.DataFrame, target_essay: str, zero_shot: bool = False, model: str = "gpt-3.5-turbo") -> str:
+    """
+    Create a few-shot learning prompt with multiple examples or a zero-shot prompt, ensuring the token count does not exceed the model's context length.
 
     Parameters:
     - examples: DataFrame containing example essays and their trait scores.
     - target_essay: The essay to be analyzed.
     - zero_shot: Whether to create a zero-shot prompt (no examples).
+    - model: The model to be used, default is "gpt-3.5-turbo".
 
     Returns:
     - prompt: A formatted string to be used as the prompt for the model.
     """
-    prompt = """
-    Analyze the following text and determine if the author exhibits the following traits: Extraversion (cEXT), Neuroticism (cNEU), Agreeableness (cAGR), Conscientiousness (cCON), Openness (cOPN). 
-    The rules are as follows, for each trait indicate 1 if it is exhibited, 0 if not. 
-    Please provide results in JSON format without further explanation and without indicating it is a JSON file.
+    base_prompt = """
+    Analyze the following text and determine if the author exhibits the following traits: Extraversion (cEXT), Neuroticism (cNEU), Agreeableness (cAGR), Conscientiousness (cCON), Openness (cOPN).
+    Indicate 1 if the trait is exhibited, 0 if not. Use cEXT, cNEU, cAGR, cCON and cOPN to represent each trait.
+    Return only results in JSON format without indicating it is JSON file. 
     """
 
-    if not zero_shot:
-        for _, row in examples.iterrows():
-            prompt += f"""
-            Here is an example:
-            Analyze the essay
-            "{row['TEXT']}"
-
-            {{
-                "cEXT": {1 if row['cEXT'] == 'y' else 0},
-                "cNEU": {1 if row['cNEU'] == 'y' else 0}, 
-                "cAGR": {1 if row['cAGR'] == 'y' else 0}, 
-                "cCON": {1 if row['cCON'] == 'y' else 0}, 
-                "cOPN": {1 if row['cOPN'] == 'y' else 0}  
-            }}
-            """
-
-    prompt += f"""
+    target_text = f"""
     Analyze the essay:
     {target_essay}
     """
-    
-    return prompt
+
+    max_tokens = 16000  # Adjust based on model's token limit
+
+    if zero_shot:
+        return base_prompt + target_text
+
+    # Start with a base prompt and add examples one by one until we exceed the token limit
+    current_prompt = base_prompt
+    for _, row in examples.iterrows():
+        example_text = f"""
+        Example:
+        "{row['TEXT']}"
+
+        {{
+            "cEXT": {1 if row['cEXT'] == 'y' else 0},
+            "cNEU": {1 if row['cNEU'] == 'y' else 0}, 
+            "cAGR": {1 if row['cAGR'] == 'y' else 0}, 
+            "cCON": {1 if row['cCON'] == 'y' else 0}, 
+            "cOPN": {1 if row['cOPN'] == 'y' else 0}  
+        }}
+        """
+        if count_tokens(current_prompt + example_text + target_text, model) <= max_tokens:
+            current_prompt += example_text
+        else:
+            return {}
+
+    current_prompt += target_text
+    return current_prompt
 
 def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[List[Dict[str, int]], int, pd.DataFrame]:
     """
@@ -90,9 +111,12 @@ def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[
     successful_indices = []
 
     examples = actual.sample(n=example_count) if example_count > 0 else None
-
+    count = 0
     for idx, essay in enumerate(essays):
-        prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
+        print(f"Now Processing {count}")
+        prompt = {}
+        while not prompt:
+            prompt = create_few_shot_prompt(examples, essay, zero_shot=(example_count == 0))
         model_name = "gpt-3.5-turbo"
 
         response = completion_with_backoff(
@@ -111,6 +135,8 @@ def analyze_personality(dataset: pd.DataFrame, example_count: int = 0) -> Tuple[
         else:
             results.append(trait_scores)
             successful_indices.append(idx)
+        
+        count +=1
 
     # Filter the actual DataFrame to retain only rows corresponding to successful analyses
     filtered_actual = actual.iloc[successful_indices]
@@ -132,9 +158,17 @@ def parse_json_to_dict(json_str):
         dict: A Python dictionary representing the JSON data.
     """
     try:
-        # Convert the JSON string to a Python dictionary
-        result_dict = json.loads(json_str)
-        return result_dict
+        # Use regular expression to extract JSON object from the response
+        json_match = re.search(r'\{[\s\S]*\}', json_str)
+        if json_match:
+            json_str_clean = json_match.group(0)
+            # Convert the JSON string to a Python dictionary
+            result_dict = json.loads(json_str_clean)
+            return result_dict
+        else:
+            print(json_str)
+            print("No valid JSON found in the response.")
+            return {}
     except json.JSONDecodeError as e:
         # Handle the case where the string is not valid JSON
         print(json_str)
@@ -215,10 +249,11 @@ def compute_average_metrics(metrics_list):
 filepath = 'essays.csv'
 dataset = load_dataset(filepath)
 dataset = dataset.sample(frac=0.15, random_state=42)
+#dataset = dataset.head(20)
 
 # Test the analysis for 10 times
 all_metrics = []
-example_count = 16  # Number of examples for few-shot learning, set to 0 for zero-shot learning
+example_count = 16 # Number of examples for few-shot learning, set to 0 for zero-shot learning
 
 for i in range(3):
     print(f"Iteration {i+1}")
@@ -226,7 +261,7 @@ for i in range(3):
     print(f"Missed {miss_count} essays")
     metrics = calculate_metrics(filtered_actual, predicted_traits)
     all_metrics.append(metrics)
-    #print(f"Iteration {i+1} Metrics: {metrics}")
+    print(f"Iteration {i+1} Metrics: {metrics}")
 
 average_metrics_result = compute_average_metrics(all_metrics)
 print(f"Conducting {example_count} shot test, Average Metrics: \n")
