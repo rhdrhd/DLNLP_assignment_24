@@ -44,14 +44,14 @@ conda env create -f environment.yml
 ```
 conda activate nlp-final
 ```
-3. Run main.py if all the dependencies required for the current project are already installed. **train mode is by default set as False, PLease adjust to True to start Training**
+3. Run main.py if all the dependencies required for the current project are already installed. **In main.py file, train mode is by default set as False, PLease adjust to True to start Training**
 ```
 python main.py
 ```
 ## Notes
 Model weights trained in project and Word2Vector model weights are downloaded automatically. You can also obtain the same weights by turning on train_mode.
 
-In case the download does not work, please manually download the pretrained weights from all these [link1](https://drive.google.com/file/d/1_RwOEto-l-ra2ApAFXvi-KFO4-o_ZnXk/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) [link2](https://drive.google.com/file/d/1XScpzWarASBsqiCqkKtGmsjwr26b6mKP/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) [link3](https://drive.google.com/file/d/1u-UZMd5hwVPIR_sTGmHzldpeuRfuvLqY/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) [link4](https://drive.google.com/file/d/1nBIYwQf4iAwEYFYqqdyKgnzQCjnmEhgd/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g),and put them in model_weights folder.
+In case the download does not work, please manually download the pretrained weights from all these [link1](https://drive.google.com/file/d/1_RwOEto-l-ra2ApAFXvi-KFO4-o_ZnXk/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) [link2](https://drive.google.com/file/d/1XScpzWarASBsqiCqkKtGmsjwr26b6mKP/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) [link3](https://drive.google.com/file/d/1u-UZMd5hwVPIR_sTGmHzldpeuRfuvLqY/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) [link4](https://drive.google.com/file/d/1nBIYwQf4iAwEYFYqqdyKgnzQCjnmEhgd/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g), and put them in model_weights folder.
 
 Word2Vector Model from google at [link](https://drive.google.com/file/d/0B7XkCwpI5KDYNlNUTTlSS21pQmM/view?usp=share_link&resourcekey=0-wjGZdNAUop6WykTtMip30g) and put it in data_preprocess folder
 
