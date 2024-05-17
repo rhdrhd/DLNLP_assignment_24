@@ -1,8 +1,10 @@
+import os
 import re
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import gdown
 from gensim.models import KeyedVectors
 from torch.utils.data import Dataset, random_split, TensorDataset
 from torch.nn.utils.rnn import pad_sequence
@@ -317,3 +319,31 @@ def plot_wordcloud(text):
     plt.imshow(wordcloud, interpolation='bilinear')
     plt.axis('off')  # Turn off axis numbers and ticks
     plt.savefig('Images/wordcloud.png')
+
+
+def download_files():
+    files = [
+        {'id': '1_RwOEto-l-ra2ApAFXvi-KFO4-o_ZnXk', 'name': 'best_model_bert_acc.pth'},
+        {'id': '1XScpzWarASBsqiCqkKtGmsjwr26b6mKP', 'name': 'best_model_lstm_acc.pth'},
+        {'id': '1u-UZMd5hwVPIR_sTGmHzldpeuRfuvLqY', 'name': 'best_model_lstm_loss.pth'},
+        {'id': '1nBIYwQf4iAwEYFYqqdyKgnzQCjnmEhgd', 'name': 'best_model_bert_loss.pth'}
+    ]
+
+    # Ensure the model_weights directory exists
+    os.makedirs('model_weights', exist_ok=True)
+
+    for file in files:
+        output = os.path.join('model_weights', file['name'])
+        
+        if os.path.exists(output):
+            print(f"{output} already exists. Skipping download.")
+            continue
+        
+        url = f"https://drive.google.com/uc?export=download&id={file['id']}"
+        print(f"Downloading {output} from {url}")
+        try:
+            gdown.download(url, output, quiet=False)
+        except Exception as e:
+            print(f"Failed to download {file['name']}: {e}")
+            print("Please manually download the weights and put them in the model_weights folder.")
+

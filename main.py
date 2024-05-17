@@ -11,13 +11,16 @@ os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 from model_training.LSTM import *
 from data_preprocess.preprocess import *
 from model_training.chatgpt_prompt import *
-from model_training.bag_of_word_linear_regression import *
+from model_training.bag_of_word_logistic_regression import *
 from model_training.BERT_finetune import *
 
 train_mode = False
-openai_api = "sk-proj-EwRsyEt1chy2ZSdlumsRT3BlbkFJqgPaeKVzUDyOawgAUFKH"
+openai_api = "sk-proj-EwRsyEt1chy2ZSdlumsRT3BlbkFJqgPaeKVzUDyOawgAUFKH" #Paste OpenAI api key here
 
-# Test Bag-of-word with Linear Regression
+# Download weights from google drive
+download_files()
+
+# Test Bag-of-word with Logistic Regression
 test_bag_of_words()
 print("\n")
 
