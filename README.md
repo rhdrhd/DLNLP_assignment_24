@@ -1,4 +1,4 @@
-# ELEC0141_NLP_Project
+# ELEC0141_NLP_Project_SN23039407
 This repo presents the development and evaluation of various NLP machine learning models for the task of personality trait prediction over Essays Dataset. The dataset is a collection of essays written by students and annotated with the Big Five personality traits. The project is part of the ELEC0141 Natural Language Processing course at University College London.
 
 Models used in the project are:
