@@ -19,6 +19,8 @@ openai_api = "sk-proj-EwRsyEt1chy2ZSdlumsRT3BlbkFJqgPaeKVzUDyOawgAUFKH" #Paste O
 
 # Download weights from google drive
 download_files()
+download_word2vector()
+print("\n")
 
 # Test Bag-of-word with Logistic Regression
 test_bag_of_words()
@@ -38,7 +40,7 @@ print("\n")
 
 # Test ChatGPT Prompt Learning
 if openai_api:
-    test_chatgpt(fraction=0.005,example_count=1,iterations=1,api_key=openai_api)
+    test_chatgpt(fraction=0.001,example_count=1,iterations=1,api_key=openai_api)
 else:
     print("please input your openai apikey for testing")
 

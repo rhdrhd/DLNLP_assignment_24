@@ -152,7 +152,7 @@ def convert_tokens_to_indices(documents, vocab):
 # Function to apply word embeddings
 def apply_word_embeddings(vocab):
     # Load the pre-trained Word2Vec model
-    word2vec = KeyedVectors.load_word2vec_format('data_preprocess/GoogleNews-vectors-negative300.bin', binary=True)
+    word2vec = KeyedVectors.load_word2vec_format('data_preprocess/word2vector.bin', binary=True)
     embedding_dim = word2vec.vector_size  # Typically 300 for Google's Word2Vec
 
     # Initialize the embedding matrix
@@ -347,3 +347,25 @@ def download_files():
             print(f"Failed to download {file['name']}: {e}")
             print("Please manually download the weights and put them in the model_weights folder.")
 
+def download_word2vector():
+    file = {
+        'id': '1utaY1yW1VKooKicVtaT_-j4Ha37Q6FYT',
+        'name': 'word2vector.bin'
+    }
+
+    # Ensure the data_preprocess directory exists
+    os.makedirs('data_preprocess', exist_ok=True)
+
+    output = os.path.join('data_preprocess', file['name'])
+    
+    if os.path.exists(output):
+        print(f"{output} already exists. Skipping download.")
+        return
+    
+    url = f"https://drive.google.com/uc?export=download&id={file['id']}"
+    print(f"Downloading {output} from {url}")
+    try:
+        gdown.download(url, output, quiet=False)
+    except Exception as e:
+        print(f"Failed to download {file['name']}: {e}")
+        print("Please manually download the weights and put them in the data_preprocess folder.")
