@@ -16,6 +16,7 @@ The current project structure is shown below
 │   ├── EDA.ipynb
 |   ├── essay.csv
 |   ├── word2vector.bin
+|   ├── images
 ├── model_training
 │   ├── init.py
 │   ├── bag_of_word_logistic_regression.py
