@@ -1,7 +1,8 @@
-name: nlp-project
+name: nlp-final
 
 dependencies:
   - python=3.8
   - pip
+  - cudnn=8.9.2 
   - pip:
     - -r requirements.txt

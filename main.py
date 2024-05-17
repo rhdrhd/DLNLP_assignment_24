@@ -1,21 +1,12 @@
-import os
+from data_preprocess.preprocess import download_files,download_word2vector
+from model_training.bag_of_word_logistic_regression import test_bag_of_words
+from model_training.LSTM import train_lstm, test_lstm
+from model_training.BERT_finetune import train_bert, test_bert
+from model_training.chatgpt_prompt import test_chatgpt
 
-# Unset LD_LIBRARY_PATH to avoid cuDNN conflicts
-if 'LD_LIBRARY_PATH' in os.environ:
-    del os.environ['LD_LIBRARY_PATH']
-
-# Set CUBLAS_WORKSPACE_CONFIG to ensure deterministic behavior with CuBLAS
-os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
-
-# Import modules after setting the seed to ensure reproducibility in those imports
-from model_training.LSTM import *
-from data_preprocess.preprocess import *
-from model_training.chatgpt_prompt import *
-from model_training.bag_of_word_logistic_regression import *
-from model_training.BERT_finetune import *
 
 train_mode = False
-openai_api = "sk-proj-EwRsyEt1chy2ZSdlumsRT3BlbkFJqgPaeKVzUDyOawgAUFKH" #Paste OpenAI api key here
+openai_api = "" # Paste OpenAI api key here
 
 # Download weights from google drive
 download_files()
@@ -42,5 +33,5 @@ print("\n")
 if openai_api:
     test_chatgpt(fraction=0.001,example_count=1,iterations=1,api_key=openai_api)
 else:
-    print("please input your openai apikey for testing")
+    print("### Please input your openai apikey for testing")
 

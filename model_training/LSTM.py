@@ -2,7 +2,6 @@ import os
 import random
 
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -10,7 +9,7 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset, random_split
 import torch.nn.functional as F
 import wandb
 
-from data_preprocess.preprocess import apply_word_embeddings, preprocess_data, prepare_data_for_bert
+from data_preprocess.preprocess import apply_word_embeddings, preprocess_data
 
 
 def seed_everything(seed=42):
@@ -18,12 +17,15 @@ def seed_everything(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     torch.use_deterministic_algorithms(True)
+
+
 
 class Customized_LSTM(nn.Module):
     def __init__(self, embedding_matrix, sentence_hidden_dim, document_hidden_dim, output_dim, num_layers=1, bidirectional=False, dropout=0.1):
